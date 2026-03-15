@@ -40,75 +40,62 @@ const {useState,useEffect,useCallback,useRef,useMemo}=React;
 
 const GAMMA="https://gamma-api.polymarket.com";
 const CLOB="https://clob.polymarket.com";
-const CORS_PROXIES=[
-  u=>"https://corsproxy.io/?url="+encodeURIComponent(u),
-  u=>"https://api.allorigins.win/raw?url="+encodeURIComponent(u),
-  u=>"https://api.codetabs.com/v1/proxy?quest="+encodeURIComponent(u),
-];
 
 // Detect Firefox — always needs proxy for Polymarket APIs
 const IS_FIREFOX=navigator.userAgent.toLowerCase().includes("firefox");
-let useProxy=IS_FIREFOX; // Firefox starts in proxy mode immediately
-let workingProxy=-1;
+let useProxy=IS_FIREFOX;
 let lastFetchTime=0;
 
-const smartFetch=async(url,opts={},retries=2)=>{
-  // Rate limit: min 200ms between proxy calls
-  if(useProxy){const now=Date.now(),wait=200-(now-lastFetchTime);if(wait>0)await new Promise(r=>setTimeout(r,wait));lastFetchTime=Date.now()}
+// Proxy: only codetabs works reliably on Firefox
+const proxyUrl=u=>"https://api.codetabs.com/v1/proxy?quest="+encodeURIComponent(u);
 
-  // Try direct only on non-Firefox browsers
+const smartFetch=async(url,opts={})=>{
+  // Rate limit for proxy: min 250ms between calls
+  if(useProxy){const now=Date.now(),wait=250-(now-lastFetchTime);if(wait>0)await new Promise(r=>setTimeout(r,wait));lastFetchTime=Date.now()}
+
+  // Direct fetch for non-Firefox
   if(!useProxy){
     try{
       const c=new AbortController();
       const t=setTimeout(()=>c.abort(),8000);
-      const mergedSignal=opts.signal;
-      if(mergedSignal?.aborted)throw new DOMException("Aborted","AbortError");
+      if(opts.signal?.aborted)throw new DOMException("Aborted","AbortError");
       const r=await fetch(url,{signal:c.signal});
       clearTimeout(t);
       if(r.ok)return r;
     }catch(e){
       if(e.name==="AbortError"&&opts.signal?.aborted)throw e;
     }
-    console.log("Direct fetch failed → proxy mode");
+    console.log("Direct failed, switching to proxy");
     useProxy=true;lastFetchTime=Date.now();
   }
 
-  // Proxy rotation with retry
-  const order=workingProxy>=0
-    ?[workingProxy,...[0,1,2].filter(i=>i!==workingProxy)]
-    :[0,1,2];
-
-  for(const pi of order){
-    if(pi>=CORS_PROXIES.length)continue;
-    for(let attempt=0;attempt<=retries;attempt++){
-      try{
-        if(opts.signal?.aborted)throw new DOMException("Aborted","AbortError");
-        const proxyUrl=CORS_PROXIES[pi](url);
-        const c=new AbortController();
-        const t=setTimeout(()=>c.abort(),15000);
-        // Link abort signals
-        const onAbort=()=>{c.abort();clearTimeout(t)};
-        opts.signal?.addEventListener("abort",onAbort,{once:true});
-        const r=await fetch(proxyUrl,{signal:c.signal});
-        clearTimeout(t);
-        opts.signal?.removeEventListener("abort",onAbort);
-        if(r.ok){workingProxy=pi;return r}
-        // Rate limited — back off
-        if(r.status===429||r.status===503){
-          console.log(`Proxy ${pi} rate limited, waiting...`);
-          await new Promise(r=>setTimeout(r,3000*(attempt+1)));
-          continue;
-        }
-      }catch(e){
-        if(e.name==="AbortError"&&opts.signal?.aborted)throw e;
-        if(attempt<retries){
-          console.log(`Proxy ${pi} attempt ${attempt+1} failed, retrying...`);
-          await new Promise(r=>setTimeout(r,1500*(attempt+1)));
-        }
+  // Proxy fetch with retry
+  for(let attempt=0;attempt<3;attempt++){
+    try{
+      if(opts.signal?.aborted)throw new DOMException("Aborted","AbortError");
+      const purl=proxyUrl(url);
+      const c=new AbortController();
+      const t=setTimeout(()=>c.abort(),15000);
+      const onAbort=()=>{c.abort();clearTimeout(t)};
+      opts.signal?.addEventListener("abort",onAbort,{once:true});
+      const r=await fetch(purl,{signal:c.signal});
+      clearTimeout(t);
+      opts.signal?.removeEventListener("abort",onAbort);
+      if(r.ok)return r;
+      if(r.status===429||r.status===503){
+        console.log("Proxy rate limited, waiting "+(2*(attempt+1))+"s...");
+        await new Promise(r=>setTimeout(r,2000*(attempt+1)));
+        continue;
+      }
+      return null;
+    }catch(e){
+      if(e.name==="AbortError"&&opts.signal?.aborted)throw e;
+      if(attempt<2){
+        console.log("Proxy attempt "+(attempt+1)+" failed, retrying...");
+        await new Promise(r=>setTimeout(r,1500*(attempt+1)));
       }
     }
   }
-  console.warn("All proxies failed for:",url);
   return null;
 };
 const LS_KEY="pm_scanner_settings";
