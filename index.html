@@ -40,33 +40,58 @@ const {useState,useEffect,useCallback,useRef,useMemo}=React;
 
 const GAMMA="https://gamma-api.polymarket.com";
 const CLOB="https://clob.polymarket.com";
-const CORS_PROXIES=["https://corsproxy.io/?url=","https://api.allorigins.win/raw?url="];
+const CORS_PROXIES=[
+  u=>"https://corsproxy.io/?url="+encodeURIComponent(u),
+  u=>"https://api.allorigins.win/raw?url="+encodeURIComponent(u),
+  u=>"https://api.codetabs.com/v1/proxy?quest="+encodeURIComponent(u),
+];
 let useProxy=false;
-let proxyIdx=0;
+let workingProxy=-1;
+let lastFetchTime=0;
 
-// Smart fetch: try direct first, fallback to CORS proxy (needed for Firefox)
-const smartFetch=async(url,opts={})=>{
+// Rate-limited smart fetch with retry + proxy rotation
+const smartFetch=async(url,opts={},retries=2)=>{
+  // Rate limit: min 150ms between proxy calls
+  if(useProxy){const now=Date.now(),wait=150-(now-lastFetchTime);if(wait>0)await new Promise(r=>setTimeout(r,wait));lastFetchTime=Date.now()}
+
+  // Try direct first (works on Chrome/Safari)
   if(!useProxy){
     try{
-      const r=await fetch(url,opts);
+      const c=new AbortController();
+      const t=setTimeout(()=>c.abort(),8000);
+      const r=await fetch(url,{signal:opts.signal||c.signal});
+      clearTimeout(t);
       if(r.ok)return r;
-      throw new Error(`HTTP ${r.status}`);
     }catch(e){
-      if(e.name==="AbortError")throw e;
-      console.log("Direct fetch failed, switching to CORS proxy");
-      useProxy=true;
+      if(e.name==="AbortError"&&opts.signal?.aborted)throw e;
+    }
+    console.log("Direct blocked → proxy mode");
+    useProxy=true;lastFetchTime=Date.now();
+  }
+
+  // Try working proxy first, then rotate
+  const order=workingProxy>=0?[workingProxy,...CORS_PROXIES.map((_,i)=>i).filter(i=>i!==workingProxy)]:CORS_PROXIES.map((_,i)=>i);
+
+  for(const pi of order){
+    for(let attempt=0;attempt<=retries;attempt++){
+      try{
+        const proxyUrl=CORS_PROXIES[pi](url);
+        const c=new AbortController();
+        const t=setTimeout(()=>c.abort(),12000);
+        const sig=opts.signal;
+        if(sig?.aborted)throw new DOMException("Aborted","AbortError");
+        sig?.addEventListener("abort",()=>c.abort());
+        const r=await fetch(proxyUrl,{signal:c.signal});
+        clearTimeout(t);
+        if(r.ok){workingProxy=pi;return r}
+        if(r.status===429){await new Promise(r=>setTimeout(r,2000*(attempt+1)));continue}
+      }catch(e){
+        if(e.name==="AbortError"&&opts.signal?.aborted)throw e;
+        if(attempt<retries)await new Promise(r=>setTimeout(r,1000*(attempt+1)));
+      }
     }
   }
-  // Try proxies
-  for(let i=0;i<CORS_PROXIES.length;i++){
-    const pi=(proxyIdx+i)%CORS_PROXIES.length;
-    try{
-      const proxyUrl=CORS_PROXIES[pi]+encodeURIComponent(url);
-      const r=await fetch(proxyUrl,{signal:opts.signal});
-      if(r.ok){proxyIdx=pi;return r}
-    }catch(e){if(e.name==="AbortError")throw e}
-  }
-  throw new Error("Tutte le connessioni fallite. Prova con Chrome.");
+  return null; // Return null instead of throwing — let callers handle gracefully
 };
 const LS_KEY="pm_scanner_settings";
 
@@ -267,13 +292,61 @@ function App(){
     if(loading)return;setLoading(true);setError(null);if(!auto)setSignals([]);
     abRef.current=new AbortController();const sg=abRef.current.signal;
     try{
-      let all=[];const pgs=8;
-      for(let i=0;i<pgs;i++){setProgress({t:`Mercati (${i+1}/${pgs})...`,p:((i+1)/pgs)*30});const r=await smartFetch(`${GAMMA}/markets?closed=false&active=true&limit=100&offset=${i*100}&order=volume24hr&ascending=false`,{signal:sg});if(!r.ok)throw new Error(`API ${r.status}`);const d=await r.json();if(!d.length)break;all=all.concat(d);await sleep(250)}
+      // PHASE 1: Fetch markets (sequential, not parallel — proxy friendly)
+      let all=[];const pgs=useProxy?4:8; // fewer pages when proxied
+      for(let i=0;i<pgs;i++){
+        setProgress({t:`Mercati (${i+1}/${pgs})...`,p:((i+1)/pgs)*30});
+        const r=await smartFetch(`${GAMMA}/markets?closed=false&active=true&limit=100&offset=${i*100}&order=volume24hr&ascending=false`,{signal:sg});
+        if(!r){setProgress({t:"Connessione instabile, analizzo dati parziali...",p:30});break}
+        const d=await r.json();
+        if(!d.length)break;
+        all=all.concat(d);
+        await sleep(useProxy?500:250);
+      }
+      if(!all.length)throw new Error("Nessun mercato caricato. Controlla la connessione.");
+
+      // PHASE 2: Orderbook — only top 30 (not 100), sequential batches of 2
       setProgress({t:"Orderbook...",p:35});
-      const top=all.filter(m=>(parseFloat(m.volume24hr)||0)>0).sort((a,b)=>(parseFloat(b.volume24hr)||0)-(parseFloat(a.volume24hr)||0)).slice(0,100);
-      for(let i=0;i<top.length;i+=5){const batch=top.slice(i,i+5);await Promise.all(batch.map(async m=>{try{const tks=JSON.parse(m.clobTokenIds||"[]");if(!tks[0])return;const bR=await smartFetch(`${CLOB}/book?token_id=${tks[0]}`,{signal:sg});if(!bR.ok)return;const bk=await bR.json();const bV=(bk.bids||[]).reduce((s,b)=>s+parseFloat(b.size||0),0),aV=(bk.asks||[]).reduce((s,a)=>s+parseFloat(a.size||0),0),tt=bV+aV;m._bookImbalance=tt>0?(bV-aV)/tt:0;const bb=bk.bids?.[0]?.price?parseFloat(bk.bids[0].price):0,ba=bk.asks?.[0]?.price?parseFloat(bk.asks[0].price):1;m._spread=ba-bb}catch(e){}}));setProgress({t:`OB (${Math.min(i+5,top.length)}/${top.length})`,p:35+(Math.min(i+5,top.length)/top.length)*35});await sleep(180)}
-      setProgress({t:"Prezzi...",p:72});const prH={};const cands=top.slice(0,50);
-      for(let i=0;i<cands.length;i+=5){const batch=cands.slice(i,i+5);await Promise.all(batch.map(async m=>{try{const tks=JSON.parse(m.clobTokenIds||"[]");if(!tks[0])return;const r=await smartFetch(`${CLOB}/prices-history?market=${tks[0]}&interval=1d&fidelity=60`,{signal:sg});if(!r.ok)return;const d=await r.json();if(d.history?.length)prH[m.id]=d.history.map(h=>({t:h.t,p:parseFloat(h.p)}))}catch(e){}}));setProgress({t:`Prezzi (${Math.min(i+5,cands.length)}/${cands.length})`,p:72+(Math.min(i+5,cands.length)/cands.length)*20});await sleep(180)}
+      const top=all.filter(m=>(parseFloat(m.volume24hr)||0)>0).sort((a,b)=>(parseFloat(b.volume24hr)||0)-(parseFloat(a.volume24hr)||0)).slice(0,useProxy?30:80);
+      let obDone=0;
+      for(let i=0;i<top.length;i+=(useProxy?2:5)){
+        const batch=top.slice(i,i+(useProxy?2:5));
+        await Promise.all(batch.map(async m=>{try{
+          const tks=JSON.parse(m.clobTokenIds||"[]");if(!tks[0])return;
+          const bR=await smartFetch(`${CLOB}/book?token_id=${tks[0]}`,{signal:sg});
+          if(!bR)return;
+          const bk=await bR.json();
+          const bV=(bk.bids||[]).reduce((s,b)=>s+parseFloat(b.size||0),0);
+          const aV=(bk.asks||[]).reduce((s,a)=>s+parseFloat(a.size||0),0);
+          const tt=bV+aV;
+          m._bookImbalance=tt>0?(bV-aV)/tt:0;
+          const bb=bk.bids?.[0]?.price?parseFloat(bk.bids[0].price):0;
+          const ba=bk.asks?.[0]?.price?parseFloat(bk.asks[0].price):1;
+          m._spread=ba-bb;
+        }catch(e){}}));
+        obDone=Math.min(i+(useProxy?2:5),top.length);
+        setProgress({t:`OB (${obDone}/${top.length})`,p:35+(obDone/top.length)*35});
+        await sleep(useProxy?600:180);
+      }
+
+      // PHASE 3: Price history — only top 20 when proxied, sequential
+      setProgress({t:"Prezzi...",p:72});
+      const prH={};
+      const cands=top.slice(0,useProxy?20:50);
+      for(let i=0;i<cands.length;i+=(useProxy?2:5)){
+        const batch=cands.slice(i,i+(useProxy?2:5));
+        await Promise.all(batch.map(async m=>{try{
+          const tks=JSON.parse(m.clobTokenIds||"[]");if(!tks[0])return;
+          const r=await smartFetch(`${CLOB}/prices-history?market=${tks[0]}&interval=1d&fidelity=60`,{signal:sg});
+          if(!r)return;
+          const d=await r.json();
+          if(d.history?.length)prH[m.id]=d.history.map(h=>({t:h.t,p:parseFloat(h.p)}));
+        }catch(e){}}));
+        setProgress({t:`Prezzi (${Math.min(i+(useProxy?2:5),cands.length)}/${cands.length})`,p:72+(Math.min(i+(useProxy?2:5),cands.length)/cands.length)*20});
+        await sleep(useProxy?600:180);
+      }
+
+      // PHASE 4: Analyze
       setProgress({t:"Analisi...",p:95});await sleep(50);
       const det=analyze(all,prH,cfg);setSignals(det);
       const st={scanned:all.length,signals:det.length,critical:det.filter(s=>s.maxSeverity==="critical").length,alert:det.filter(s=>s.maxSeverity==="alert").length,watch:det.filter(s=>s.maxSeverity==="watch").length};
