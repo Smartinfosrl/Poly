@@ -217,7 +217,7 @@ function Card({signal:s,rank:r}){
 
 // ─── Config ────────────────────────────────────────
 const DEF_CFG={rareCategoryMax:3,newTypeMaxAge:72,newTypeMinVol:5000,surgeMinVol:3000,surgeRatio:.2,surgeVsMedian:5,priceSwingMin:.1,volLiqImbalance:4,bookSkewThreshold:.6,nicheMaxTotalVol:50000,nicheMinDailyVol:2000,nicheHeatRatio:.15,geoExpiryHours:72,spreadWide:.06};
-const CFG_M={rareCategoryMax:{l:"Cat. rara max",mn:1,mx:10,s:1},newTypeMaxAge:{l:"Età nuova tipo (h)",mn:12,mx:336,s:12},surgeMinVol:{l:"Vol min surge $",mn:500,mx:50000,s:500},surgeRatio:{l:"Ratio surge",mn:.05,mx:.8,s:.05},priceSwingMin:{l:"Swing min",mn:.03,mx:.5,s:.01},volLiqImbalance:{l:"Vol/Liq ratio",mn:1,mx:20,s:.5},bookSkewThreshold:{l:"Book skew",mn:.3,mx:.95,s:.05},geoExpiryHours:{l:"Geo finestra (h)",mn:12,mx:336,s:12},spreadWide:{l:"Spread soglia",mn:.02,mx:.2,s:.01}};
+const CFG_M={rareCategoryMax:{l:"Cat. rara max",mn:1,mx:10,s:1,d:"Quanti mercati deve avere una categoria per essere 'rara'. Categorie con pochi mercati = terreno insider (es. Google YIS)."},newTypeMaxAge:{l:"Età nuova tipo (h)",mn:12,mx:336,s:12,d:"Ore dalla creazione per considerare un mercato 'nuovo'. Il mercato Maduro fu creato e sfruttato nelle stesse ore."},surgeMinVol:{l:"Vol min surge $",mn:500,mx:50000,s:500,d:"Volume 24h minimo per segnalare un picco. Caso Maduro: $32K in ore. Caso Iran: $529M totali."},surgeRatio:{l:"Ratio surge",mn:.05,mx:.8,s:.05,d:"Se vol24h supera questa % del volume totale = allarme. 0.20 = 20% dello storico in un giorno."},priceSwingMin:{l:"Swing min prezzo",mn:.03,mx:.5,s:.01,d:"Variazione minima prezzo per segnalare dislocazione. Maduro: da 7% a 100%. 0.10 = 10 punti."},volLiqImbalance:{l:"Vol/Liq ratio",mn:1,mx:20,s:.5,d:"Rapporto volume/liquidità. Alto = acquisto aggressivo su book sottile. Chi sa qualcosa accetta qualsiasi prezzo."},bookSkewThreshold:{l:"Book skew",mn:.3,mx:.95,s:.05,d:"Sbilanciamento orderbook (0-1). 0.6 = 60% del book su un lato. Pressione direzionale = possibile insider."},geoExpiryHours:{l:"Geo finestra (h)",mn:12,mx:336,s:12,d:"Ore alla scadenza per mercati geopolitici. Iran e Maduro avevano scadenze ravvicinate + volumi improvvisi."},spreadWide:{l:"Spread soglia",mn:.02,mx:.2,s:.01,d:"Spread bid-ask min per 'flusso informato'. MM allargano spread quando sentono insider. Volume su spread largo = premium pagato."}};
 const PRESETS=[{l:"30min",m:30},{l:"1h",m:60},{l:"2h",m:120},{l:"4h",m:240},{l:"8h",m:480},{l:"12h",m:720},{l:"24h",m:1440}];
 
 // ═══ MAIN APP ═══
@@ -514,8 +514,26 @@ function App(){
         {/* CONFIG */}
         {panel==="config"&&<div style={PS}>
           <div style={{fontSize:12,fontWeight:700,marginBottom:10}}>⚙ Parametri</div>
+          {/* Signal Legend */}
+          <div style={{marginBottom:14,padding:10,borderRadius:6,background:"var(--card)",border:"1px solid var(--brd)"}}>
+            <div style={{fontSize:9,color:"var(--blu)",fontWeight:700,textTransform:"uppercase",letterSpacing:".5px",marginBottom:8}}>Legenda Segnali</div>
+            {[
+              ["🆕","Nuova tipologia","Categoria rara di mercato appena creata. I mercati di nicchia sono il veicolo preferito per insider (Google YIS, Axiom).","CRITICO se vol > soglia, altrimenti MONITOR"],
+              ["📊","Picco volume","Volume 24h sproporzionato rispetto allo storico o alla mediana. Pattern chiave nei casi Maduro ($32K→$400K) e Iran ($529M).","CRITICO se 2x la soglia, altrimenti ALLERTA"],
+              ["⚡","Dislocazione prezzo","Movimento rapido di prezzo senza catalizzatore pubblico. Maduro: 7%→100% in ore. Iran: 17%→100%.","CRITICO se swing > 2x soglia"],
+              ["💧","Squilibrio Vol/Liq","Volume pesante su liquidità sottile. Chi ha info urgenti accetta qualsiasi prezzo pur di entrare.","CRITICO se ratio > 2x soglia"],
+              ["📐","Book sbilanciato","Orderbook con forte pressione su un lato (bid o ask). Convinzione direzionale = posizionamento informato.","ALLERTA o MONITOR"],
+              ["🔍","Nicchia attiva","Mercato con poco volume totale che improvvisamente si anima. Axiom reveal: da oscuro a $1M+ in ore.","ALLERTA"],
+              ["🌐","Geo sensibile","Mercato geopolitico vicino a scadenza con volume anomalo. Epicentro scandali: Iran, Maduro, Venezuela.","CRITICO"],
+              ["🎯","Flusso informato","Volume elevato nonostante spread largo. I MM allargano lo spread quando percepiscono adverse selection.","ALLERTA"],
+            ].map(([icon,name,desc,sev],i)=><div key={i} style={{display:"flex",gap:8,marginBottom:6,paddingBottom:6,borderBottom:i<7?"1px solid var(--brd)":"none"}}>
+              <span style={{fontSize:14,flexShrink:0,width:20,textAlign:"center"}}>{icon}</span>
+              <div><div style={{fontSize:10,fontWeight:700,color:"var(--txt)"}}>{name}</div><div style={{fontSize:8,color:"var(--dim3)",lineHeight:1.5}}>{desc}</div><div style={{fontSize:7,color:"var(--org)",marginTop:2}}>Severità: {sev}</div></div>
+            </div>)}
+          </div>
+          <div style={{fontSize:9,color:"var(--dim)",fontWeight:700,textTransform:"uppercase",letterSpacing:".5px",marginBottom:8}}>Soglie di Rilevamento</div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-            {Object.entries(CFG_M).map(([k,m])=><div key={k}><div style={{fontSize:7,color:"var(--dim)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",display:"flex",justifyContent:"space-between"}}><span>{m.l}</span><span style={{color:"var(--blu)",fontFamily:"var(--m)"}}>{cfg[k]}</span></div><input type="range" min={m.mn} max={m.mx} step={m.s} value={cfg[k]} onChange={e=>setCfg(c=>({...c,[k]:parseFloat(e.target.value)}))} style={{width:"100%"}}/></div>)}
+            {Object.entries(CFG_M).map(([k,m])=><div key={k} style={{marginBottom:4}}><div style={{fontSize:7,color:"var(--dim)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",display:"flex",justifyContent:"space-between"}}><span>{m.l}</span><span style={{color:"var(--blu)",fontFamily:"var(--m)"}}>{cfg[k]}</span></div><input type="range" min={m.mn} max={m.mx} step={m.s} value={cfg[k]} onChange={e=>setCfg(c=>({...c,[k]:parseFloat(e.target.value)}))} style={{width:"100%"}}/><div style={{fontSize:8,color:"var(--dim2)",lineHeight:1.5,marginTop:2}}>{m.d}</div></div>)}
           </div>
           <div style={{textAlign:"right",marginTop:8}}><button onClick={()=>setCfg(DEF_CFG)} style={{padding:"3px 10px",borderRadius:3,border:"1px solid var(--brd)",background:"transparent",color:"var(--dim)",fontSize:9}}>Reset</button></div>
         </div>}
