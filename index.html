@@ -15,17 +15,19 @@
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-:root{--m:'JetBrains Mono','SF Mono',monospace;--s:'Instrument Sans','DM Sans',system-ui,sans-serif;--bg:#0a0a0f;--card:#111118;--srf:#0d0d14;--brd:#1e1e2e;--brd2:#252535;--txt:#e5e5ee;--txt2:#b0b0c0;--dim:#505068;--dim2:#404058;--dim3:#707088;--red:#ff2d55;--org:#ff9f0a;--blu:#64d2ff;--grn:#34c759;color-scheme:dark}
-html,body{font-family:var(--s);color:var(--txt);background:var(--bg);min-height:100vh;min-height:100dvh;overflow-x:hidden;-webkit-font-smoothing:antialiased}
-input[type=range]{height:4px;appearance:none;-webkit-appearance:none;background:#1a1a28;border-radius:2px;outline:none}
-input[type=range]::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--blu);cursor:pointer}
-button{font-family:var(--s);cursor:pointer;border:none;outline:none;transition:all .15s}
-input[type=text],input[type=email],input[type=number]{font-family:var(--m)}
+:root{--m:'JetBrains Mono','SF Mono',monospace;--s:'Instrument Sans','DM Sans',system-ui,sans-serif;--bg:#0a0a0f;--card:#111118;--srf:#0d0d14;--brd:#1e1e2e;--brd2:#252535;--txt:#e5e5ee;--txt2:#b0b0c0;--dim:#505068;--dim2:#404058;--dim3:#707088;--red:#ff2d55;--org:#ff9f0a;--blu:#64d2ff;--grn:#34c759;--sc:1.35;color-scheme:dark}
+html,body{font-family:var(--s);color:var(--txt);background:var(--bg);min-height:100vh;min-height:100dvh;overflow-x:hidden;-webkit-font-smoothing:antialiased;font-size:15px}
+input[type=range]{height:6px;appearance:none;-webkit-appearance:none;background:#1a1a28;border-radius:3px;outline:none}
+input[type=range]::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:22px;height:22px;border-radius:50%;background:var(--blu);cursor:pointer}
+button{font-family:var(--s);cursor:pointer;border:none;outline:none;transition:all .15s;font-size:13px}
+input[type=text],input[type=email],input[type=number]{font-family:var(--m);font-size:14px;padding:10px 12px}
 ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#252535;border-radius:2px}
 @keyframes pulse2{0%,100%{opacity:.4}50%{opacity:1}}
 @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 .card{animation:fadeIn .3s ease both}
 .safe-bottom{padding-bottom:env(safe-area-inset-bottom,0)}
+#root{zoom:var(--sc)}
+@supports not (zoom:1){#root{transform:scale(var(--sc));transform-origin:top left;width:calc(100%/var(--sc))}}
 </style>
 </head>
 <body class="safe-bottom">
@@ -229,7 +231,7 @@ const SEV={critical:{color:"#ff2d55",bg:"#ff2d5512",bdr:"#ff2d5540",l:"CRITICO"}
 function Spark({data,w=90,h=24}){if(!data||data.length<2)return null;const vs=data.map(d=>d.p),mn=Math.min(...vs),mx=Math.max(...vs),rg=mx-mn||1;const pts=vs.map((v,i)=>`${(i/(vs.length-1))*w},${h-((v-mn)/rg)*h}`).join(" ");const up=vs[vs.length-1]>vs[0];return React.createElement("svg",{width:w,height:h,style:{display:"block"}},React.createElement("polyline",{points:pts,fill:"none",stroke:up?"#34c759":"#ff2d55",strokeWidth:"1.5",strokeLinejoin:"round"}),React.createElement("circle",{cx:w,cy:h-((vs[vs.length-1]-mn)/rg)*h,r:"2",fill:up?"#34c759":"#ff2d55"}))}
 
 // ─── Signal Card ───────────────────────────────────
-function Card({signal:s,rank:r}){
+function Card({signal:s,rank:r,translation,onTranslate,isTranslating}){
   const[open,setOpen]=useState(false);
   const m=s.market,sv=SEV[s.maxSeverity],oc=JSON.parse(m.outcomes||"[]"),pr=JSON.parse(m.outcomePrices||"[]").map(Number);
   const cols=["#34c759","#ff2d55","#007aff","#ff9f0a","#bf5af2"];
@@ -244,8 +246,10 @@ function Card({signal:s,rank:r}){
         <div style={{flex:1,minWidth:0}}>
           <div style={{display:"flex",alignItems:"center",gap:6}}>
             <h3 style={{margin:0,fontSize:13,fontWeight:600,lineHeight:1.4,flex:1}}>{m.question}</h3>
-            <span style={{fontSize:8,color:"var(--dim)",fontFamily:"var(--m)",flexShrink:0}}>{s.detections.length}/8 sig</span>
+            <span style={{fontSize:8,color:"var(--dim)",fontFamily:"var(--m)",flexShrink:0}}>{s.detections.length}/8</span>
           </div>
+          {translation&&<div style={{fontSize:12,color:"var(--blu)",marginTop:3,fontStyle:"italic",lineHeight:1.4}}>{translation}</div>}
+          {!translation&&<button onClick={e=>{e.stopPropagation();onTranslate&&onTranslate(m.id,m.question)}} style={{marginTop:3,padding:"2px 6px",borderRadius:3,border:"1px solid var(--brd2)",background:"transparent",color:"var(--dim3)",fontSize:9,display:"inline-flex",alignItems:"center",gap:3}}>{isTranslating?"⏳":"🇮🇹"} {isTranslating?"Traduco...":"Traduci"}</button>}
           <div style={{display:"flex",flexWrap:"wrap",gap:3,marginTop:5}}>
             {s.detections.map((d,i)=><span key={i} style={{display:"inline-flex",alignItems:"center",gap:3,padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:600,background:SEV[d.severity].bg,color:SEV[d.severity].color,border:`1px solid ${SEV[d.severity].bdr}`}}>{d.icon} {d.label}</span>)}
           </div>
@@ -307,6 +311,32 @@ function App(){
   const[aLog,setALog]=useState([]);
   const[hist,setHist]=useState([]);
 
+  // ── Translation ──
+  const[translations,setTranslations]=useState({});
+  const[translating,setTranslating]=useState(null);
+  const translateText=useCallback(async(id,text)=>{
+    if(translations[id])return;
+    setTranslating(id);
+    try{
+      const r=await fetch("https://api.anthropic.com/v1/messages",{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:300,
+          messages:[{role:"user",content:`Traduci in italiano questa domanda di mercato predittivo. Rispondi SOLO con la traduzione, nient'altro:\n\n"${text}"`}]})
+      });
+      if(r.ok){const d=await r.json();const t=d.content?.[0]?.text||text;setTranslations(p=>({...p,[id]:t.replace(/^"|"$/g,"")}))}
+    }catch(e){console.log("Translation failed:",e)}
+    setTranslating(null);
+  },[translations]);
+  const translateAll=useCallback(async(sigs)=>{
+    for(const s of sigs.slice(0,20)){
+      if(!translations[s.market.id]){await translateText(s.market.id,s.market.question);await new Promise(r=>setTimeout(r,300))}
+    }
+  },[translations,translateText]);
+
+  // ── Text size ──
+  const[textScale,setTextScale]=useState(parseFloat(saved.textScale||1.35));
+  useEffect(()=>{document.documentElement.style.setProperty("--sc",textScale);saveSettings({cfg,schMin,ch,ejsPK,ejsSI,ejsTI,emTo,tgTok,tgCid,minSev,textScale})},[textScale]);
+
   // ── Install PWA state ──
   const[installPrompt,setInstallPrompt]=useState(null);
   const[showInstall,setShowInstall]=useState(false);
@@ -327,7 +357,7 @@ function App(){
   const dismissInstall=()=>{setShowInstall(false);localStorage.setItem('pm_install_dismissed','1')};
 
   // Persist settings on change
-  useEffect(()=>{saveSettings({cfg,schMin,ch,ejsPK,ejsSI,ejsTI,emTo,tgTok,tgCid,minSev})},[cfg,schMin,ch,ejsPK,ejsSI,ejsTI,emTo,tgTok,tgCid,minSev]);
+  useEffect(()=>{saveSettings({cfg,schMin,ch,ejsPK,ejsSI,ejsTI,emTo,tgTok,tgCid,minSev,textScale})},[cfg,schMin,ch,ejsPK,ejsSI,ejsTI,emTo,tgTok,tgCid,minSev,textScale]);
 
   useEffect(()=>{if("Notification" in window)setNotifSt(Notification.permission);else setNotifSt("unsupported")},[]);
 
@@ -451,7 +481,7 @@ function App(){
           {isStandalone?
             <div style={{textAlign:"center",padding:16,color:"var(--grn)",fontSize:12,fontWeight:600}}>✅ App già installata!</div>
           :<>
-            {/* Android / Chrome — direct install */}
+            {/* Direct install button (Chrome/Edge) */}
             {installPrompt&&<div style={{marginBottom:14}}>
               <button onClick={doInstall} style={{width:"100%",padding:"12px",borderRadius:8,background:"linear-gradient(135deg,#bf5af2,#8b5cf6)",color:"#fff",fontSize:13,fontWeight:700,letterSpacing:".3px",marginBottom:8}}>
                 📱 Installa PM Scanner
@@ -459,36 +489,38 @@ function App(){
               <div style={{fontSize:10,color:"var(--dim)",textAlign:"center"}}>L'app verrà aggiunta alla home del tuo dispositivo</div>
             </div>}
 
-            {/* Android instructions */}
-            {isAndroid&&!installPrompt&&<div style={{marginBottom:14,padding:12,borderRadius:6,background:"var(--card)",border:"1px solid var(--brd)"}}>
-              <div style={{fontSize:11,fontWeight:700,color:"var(--grn)",marginBottom:8}}>🤖 Android (Chrome)</div>
-              <div style={{fontSize:10,color:"var(--txt2)",lineHeight:1.7}}>
-                <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}><span style={{color:"var(--grn)",fontWeight:700,fontSize:12,flexShrink:0}}>1.</span><span>Tocca il menu <strong style={{color:"var(--txt)"}}>⋮</strong> (tre puntini) in alto a destra in Chrome</span></div>
-                <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}><span style={{color:"var(--grn)",fontWeight:700,fontSize:12,flexShrink:0}}>2.</span><span>Seleziona <strong style={{color:"var(--txt)"}}>"Installa app"</strong> o <strong style={{color:"var(--txt)"}}>"Aggiungi a schermata Home"</strong></span></div>
-                <div style={{display:"flex",gap:8,alignItems:"flex-start"}}><span style={{color:"var(--grn)",fontWeight:700,fontSize:12,flexShrink:0}}>3.</span><span>Conferma toccando <strong style={{color:"var(--txt)"}}>"Installa"</strong></span></div>
-              </div>
-            </div>}
-
-            {/* iOS instructions */}
-            {isIOS&&<div style={{marginBottom:14,padding:12,borderRadius:6,background:"var(--card)",border:"1px solid var(--brd)"}}>
+            {/* iOS instructions — always visible */}
+            <div style={{marginBottom:10,padding:12,borderRadius:6,background:"var(--card)",border:`1px solid ${isIOS?"var(--blu)40":"var(--brd)"}`}}>
               <div style={{fontSize:11,fontWeight:700,color:"var(--blu)",marginBottom:8}}>🍎 iPhone / iPad (Safari)</div>
               <div style={{fontSize:10,color:"var(--txt2)",lineHeight:1.7}}>
-                <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"flex-start"}}><span style={{color:"var(--blu)",fontWeight:700,fontSize:12,flexShrink:0}}>1.</span><span>Assicurati di essere su <strong style={{color:"var(--txt)"}}>Safari</strong> (non Chrome/Firefox — su iOS solo Safari supporta le PWA)</span></div>
+                <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"flex-start"}}><span style={{color:"var(--blu)",fontWeight:700,fontSize:12,flexShrink:0}}>1.</span><span>Apri l'URL dell'app in <strong style={{color:"var(--txt)"}}>Safari</strong> (obbligatorio — Chrome e Firefox su iOS non supportano PWA)</span></div>
                 <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"flex-start"}}><span style={{color:"var(--blu)",fontWeight:700,fontSize:12,flexShrink:0}}>2.</span><span>Tocca l'icona <strong style={{color:"var(--txt)"}}>Condividi</strong> <span style={{fontSize:16}}>⬆</span> (rettangolo con freccia in su) nella barra in basso</span></div>
-                <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"flex-start"}}><span style={{color:"var(--blu)",fontWeight:700,fontSize:12,flexShrink:0}}>3.</span><span>Scorri e tocca <strong style={{color:"var(--txt)"}}>"Aggiungi a schermata Home"</strong> <span style={{fontSize:14}}>➕</span></span></div>
-                <div style={{display:"flex",gap:8,alignItems:"flex-start"}}><span style={{color:"var(--blu)",fontWeight:700,fontSize:12,flexShrink:0}}>4.</span><span>Tocca <strong style={{color:"var(--txt)"}}>"Aggiungi"</strong> in alto a destra</span></div>
+                <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"flex-start"}}><span style={{color:"var(--blu)",fontWeight:700,fontSize:12,flexShrink:0}}>3.</span><span>Scorri in basso e tocca <strong style={{color:"var(--txt)"}}>"Aggiungi a schermata Home"</strong> <span style={{fontSize:14}}>➕</span></span></div>
+                <div style={{display:"flex",gap:8,alignItems:"flex-start"}}><span style={{color:"var(--blu)",fontWeight:700,fontSize:12,flexShrink:0}}>4.</span><span>Tocca <strong style={{color:"var(--txt)"}}>"Aggiungi"</strong> in alto a destra — l'icona PM Scanner apparirà nella home</span></div>
               </div>
-            </div>}
+            </div>
 
-            {/* Generic desktop/other browser */}
-            {!isIOS&&!isAndroid&&<div style={{marginBottom:14,padding:12,borderRadius:6,background:"var(--card)",border:"1px solid var(--brd)"}}>
+            {/* Android instructions — always visible */}
+            <div style={{marginBottom:10,padding:12,borderRadius:6,background:"var(--card)",border:`1px solid ${isAndroid?"var(--grn)40":"var(--brd)"}`}}>
+              <div style={{fontSize:11,fontWeight:700,color:"var(--grn)",marginBottom:8}}>🤖 Android (Chrome)</div>
+              <div style={{fontSize:10,color:"var(--txt2)",lineHeight:1.7}}>
+                <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}><span style={{color:"var(--grn)",fontWeight:700,fontSize:12,flexShrink:0}}>1.</span><span>Apri l'URL dell'app in <strong style={{color:"var(--txt)"}}>Chrome</strong></span></div>
+                <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}><span style={{color:"var(--grn)",fontWeight:700,fontSize:12,flexShrink:0}}>2.</span><span>Apparirà un banner in basso <strong style={{color:"var(--txt)"}}>"Installa PM Scanner"</strong> — toccalo</span></div>
+                <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}><span style={{color:"var(--grn)",fontWeight:700,fontSize:12,flexShrink:0}}>3.</span><span>Se non appare: tocca il menu <strong style={{color:"var(--txt)"}}>⋮</strong> (tre puntini) in alto a destra</span></div>
+                <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}><span style={{color:"var(--grn)",fontWeight:700,fontSize:12,flexShrink:0}}>4.</span><span>Seleziona <strong style={{color:"var(--txt)"}}>"Installa app"</strong> o <strong style={{color:"var(--txt)"}}>"Aggiungi a schermata Home"</strong></span></div>
+                <div style={{display:"flex",gap:8,alignItems:"flex-start"}}><span style={{color:"var(--grn)",fontWeight:700,fontSize:12,flexShrink:0}}>5.</span><span>Conferma toccando <strong style={{color:"var(--txt)"}}>"Installa"</strong></span></div>
+              </div>
+            </div>
+
+            {/* Desktop instructions — always visible */}
+            <div style={{marginBottom:10,padding:12,borderRadius:6,background:"var(--card)",border:`1px solid ${!isIOS&&!isAndroid?"var(--org)40":"var(--brd)"}`}}>
               <div style={{fontSize:11,fontWeight:700,color:"var(--org)",marginBottom:8}}>🖥 Desktop (Chrome / Edge)</div>
               <div style={{fontSize:10,color:"var(--txt2)",lineHeight:1.7}}>
-                <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}><span style={{color:"var(--org)",fontWeight:700,fontSize:12,flexShrink:0}}>1.</span><span>Clicca l'icona <strong style={{color:"var(--txt)"}}>installa</strong> 📥 nella barra degli indirizzi (a destra)</span></div>
-                <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}><span style={{color:"var(--org)",fontWeight:700,fontSize:12,flexShrink:0}}>2.</span><span>Oppure menu <strong style={{color:"var(--txt)"}}>⋮ → "Installa PM Scanner"</strong></span></div>
-                <div style={{display:"flex",gap:8,alignItems:"flex-start"}}><span style={{color:"var(--org)",fontWeight:700,fontSize:12,flexShrink:0}}>3.</span><span>Conferma l'installazione</span></div>
+                <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}><span style={{color:"var(--org)",fontWeight:700,fontSize:12,flexShrink:0}}>1.</span><span>Apri l'URL in <strong style={{color:"var(--txt)"}}>Chrome</strong> o <strong style={{color:"var(--txt)"}}>Edge</strong> (Firefox non supporta installazione PWA)</span></div>
+                <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}><span style={{color:"var(--org)",fontWeight:700,fontSize:12,flexShrink:0}}>2.</span><span>Clicca l'icona <strong style={{color:"var(--txt)"}}>installa</strong> 📥 nella barra degli indirizzi (a destra)</span></div>
+                <div style={{display:"flex",gap:8,alignItems:"flex-start"}}><span style={{color:"var(--org)",fontWeight:700,fontSize:12,flexShrink:0}}>3.</span><span>Oppure menu <strong style={{color:"var(--txt)"}}>⋮ → "Installa PM Scanner"</strong> → Conferma</span></div>
               </div>
-            </div>}
+            </div>
 
             {/* Benefits */}
             <div style={{padding:10,borderRadius:6,background:"#bf5af208",border:"1px solid #bf5af220"}}>
@@ -568,6 +600,14 @@ function App(){
         {/* CONFIG */}
         {panel==="config"&&<div style={PS}>
           <div style={{fontSize:12,fontWeight:700,marginBottom:10}}>⚙ Parametri</div>
+          {/* Text Size */}
+          <div style={{marginBottom:14,padding:10,borderRadius:6,background:"var(--card)",border:"1px solid var(--brd)"}}>
+            <div style={{fontSize:10,fontWeight:700,color:"var(--txt)",marginBottom:6}}>🔤 Dimensione testo</div>
+            <div style={{display:"flex",gap:6,alignItems:"center"}}>
+              {[{l:"S",v:1},{l:"M",v:1.2},{l:"L",v:1.35},{l:"XL",v:1.55}].map(s=><button key={s.l} onClick={()=>setTextScale(s.v)} style={{padding:"6px 14px",borderRadius:5,fontSize:12,fontWeight:700,border:`1px solid ${Math.abs(textScale-s.v)<0.05?"var(--blu)50":"var(--brd2)"}`,background:Math.abs(textScale-s.v)<0.05?"var(--blu)15":"var(--card)",color:Math.abs(textScale-s.v)<0.05?"var(--blu)":"var(--dim3)"}}>{s.l}</button>)}
+              <span style={{fontSize:9,color:"var(--dim)",fontFamily:"var(--m)",marginLeft:4}}>{(textScale*100).toFixed(0)}%</span>
+            </div>
+          </div>
           {/* Signal Legend */}
           <div style={{marginBottom:14,padding:10,borderRadius:6,background:"var(--card)",border:"1px solid var(--brd)"}}>
             <div style={{fontSize:9,color:"var(--blu)",fontWeight:700,textTransform:"uppercase",letterSpacing:".5px",marginBottom:8}}>Legenda Segnali</div>
@@ -626,7 +666,11 @@ function App(){
           <div style={{fontSize:11,color:"var(--dim)",lineHeight:1.7,maxWidth:360,margin:"0 auto"}}>Avvia una scansione o configura lo scheduler per monitoraggio automatico.</div>
           <button onClick={()=>scan(false)} style={{marginTop:16,padding:"10px 24px",borderRadius:6,background:"linear-gradient(135deg,#ff2d55,#ff6b6b)",color:"#fff",fontSize:12,fontWeight:700}}>▶ Avvia Scansione</button>
         </div>}
-        {disp.map((s,i)=><Card key={s.market.id||i} signal={s} rank={i+1}/>)}
+        {disp.length>0&&<div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+          <span style={{fontSize:10,color:"var(--dim)"}}>{disp.length} segnali</span>
+          <button onClick={()=>translateAll(disp)} style={{padding:"4px 10px",borderRadius:4,border:"1px solid var(--blu)30",background:"var(--blu)10",color:"var(--blu)",fontSize:10,fontWeight:600,display:"flex",alignItems:"center",gap:4}}>🇮🇹 Traduci tutti</button>
+        </div>}
+        {disp.map((s,i)=><Card key={s.market.id||i} signal={s} rank={i+1} translation={translations[s.market.id]} onTranslate={translateText} isTranslating={translating===s.market.id}/>)}
         {lastScan&&disp.length===0&&<div style={{textAlign:"center",padding:24,color:"var(--dim)",fontSize:11}}>Nessun segnale con i filtri attuali.</div>}
       </div>
     </div>
