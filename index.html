@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#0a0a0f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="PM Scanner">
+<meta name="description" content="Polymarket Insider Signal Detector — rileva pattern di insider trading">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="icon" href="icons/icon-192.png">
+<title>PM Scanner — Polymarket Insider Signal Detector</title>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+:root{--m:'JetBrains Mono','SF Mono',monospace;--s:'Instrument Sans','DM Sans',system-ui,sans-serif;--bg:#0a0a0f;--card:#111118;--srf:#0d0d14;--brd:#1e1e2e;--brd2:#252535;--txt:#e5e5ee;--txt2:#b0b0c0;--dim:#505068;--dim2:#404058;--dim3:#707088;--red:#ff2d55;--org:#ff9f0a;--blu:#64d2ff;--grn:#34c759;color-scheme:dark}
+html{font-size:16px}
+body{font-family:var(--s);color:var(--txt);background:var(--bg);min-height:100vh;min-height:100dvh;overflow-x:hidden;-webkit-font-smoothing:antialiased;padding-bottom:74px}
+input[type=range]{height:8px;appearance:none;-webkit-appearance:none;background:#1a1a28;border-radius:4px;outline:none;width:100%}
+input[type=range]::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:26px;height:26px;border-radius:50%;background:var(--blu);cursor:pointer}
+input[type=range]::-moz-range-thumb{width:26px;height:26px;border-radius:50%;background:var(--blu);cursor:pointer;border:none}
+button{font-family:var(--s);cursor:pointer;border:none;outline:none;transition:all .15s;min-height:44px;font-size:14px}
+input[type=text],input[type=email],input[type=number]{font-family:var(--m);font-size:16px;padding:12px 14px;border-radius:8px;border:1px solid var(--brd2);background:var(--card);color:var(--txt2);width:100%;box-sizing:border-box;outline:none;min-height:48px}
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#252535;border-radius:2px}
+@keyframes pulse2{0%,100%{opacity:.4}50%{opacity:1}}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.card{animation:fadeIn .25s ease both}
+.safe-bottom{padding-bottom:env(safe-area-inset-bottom,0)}
+.tab-bar{position:fixed;bottom:0;left:0;right:0;display:flex;background:#0c0c14;border-top:1px solid var(--brd);padding:4px 6px env(safe-area-inset-bottom,4px);z-index:100;gap:2px;max-width:600px;margin:0 auto}
+.tab-btn{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:6px 2px;border-radius:10px;background:transparent;color:var(--dim3);min-height:54px;border:none}
+.tab-btn.active{background:#64d2ff10;color:var(--blu)}
+.tab-btn .ti{font-size:22px;line-height:1}
+.tab-btn .tl{font-size:11px;font-weight:600;letter-spacing:.2px}
+.tab-btn.scan-btn{background:linear-gradient(135deg,#ff2d55,#ff6b6b);color:#fff;border-radius:14px;min-height:54px}
+.tab-btn.scan-btn .ti{font-size:24px}
+.tab-btn.scan-btn .tl{color:#fff;font-weight:700}
+</style>
+</head>
+<body class="safe-bottom">
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/babel">
+const {useState,useEffect,useCallback,useRef,useMemo}=React;
+
+const GAMMA="https://gamma-api.polymarket.com";
+const CLOB="https://clob.polymarket.com";
+
+// Detect Firefox — always needs proxy for Polymarket APIs
+const IS_FIREFOX=navigator.userAgent.toLowerCase().includes("firefox");
+let useProxy=IS_FIREFOX;
+let lastFetchTime=0;
+
+// Proxy: only codetabs works reliably on Firefox
+const proxyUrl=u=>"https://api.codetabs.com/v1/proxy?quest="+encodeURIComponent(u);
+
+const smartFetch=async(url,opts={})=>{
+  // Rate limit for proxy: min 250ms between calls
+  if(useProxy){const now=Date.now(),wait=250-(now-lastFetchTime);if(wait>0)await new Promise(r=>setTimeout(r,wait));lastFetchTime=Date.now()}
+
+  // Direct fetch for non-Firefox
+  if(!useProxy){
+    try{
+      const c=new AbortController();
+      const t=setTimeout(()=>c.abort(),8000);
+      if(opts.signal?.aborted)throw new DOMException("Aborted","AbortError");
+      const r=await fetch(url,{signal:c.signal});
+      clearTimeout(t);
+      if(r.ok)return r;
+    }catch(e){
+      if(e.name==="AbortError"&&opts.signal?.aborted)throw e;
+    }
+    console.log("Direct failed, switching to proxy");
+    useProxy=true;lastFetchTime=Date.now();
+  }
+
+  // Proxy fetch with retry
+  for(let attempt=0;attempt<3;attempt++){
+    try{
+      if(opts.signal?.aborted)throw new DOMException("Aborted","AbortError");
+      const purl=proxyUrl(url);
+      const c=new AbortController();
+      const t=setTimeout(()=>c.abort(),15000);
+      const onAbort=()=>{c.abort();clearTimeout(t)};
+      opts.signal?.addEventListener("abort",onAbort,{once:true});
+      const r=await fetch(purl,{signal:c.signal});
+      clearTimeout(t);
+      opts.signal?.removeEventListener("abort",onAbort);
+      if(r.ok)return r;
+      if(r.status===429||r.status===503){
+        console.log("Proxy rate limited, waiting "+(2*(attempt+1))+"s...");
+        await new Promise(r=>setTimeout(r,2000*(attempt+1)));
+        continue;
+      }
+      return null;
+    }catch(e){
+      if(e.name==="AbortError"&&opts.signal?.aborted)throw e;
+      if(attempt<2){
+        console.log("Proxy attempt "+(attempt+1)+" failed, retrying...");
+        await new Promise(r=>setTimeout(r,1500*(attempt+1)));
+      }
+    }
+  }
+  return null;
+};
+const LS_KEY="pm_scanner_settings";
+
+// ─── Persist settings to localStorage ─────────────
+const loadSettings=()=>{try{return JSON.parse(localStorage.getItem(LS_KEY))||{}}catch(e){return{}}};
+const saveSettings=(s)=>{try{localStorage.setItem(LS_KEY,JSON.stringify(s))}catch(e){}};
+
+// ─── Utils ─────────────────────────────────────────
+const fmt=n=>{if(!n&&n!==0)return"$0";if(n>=1e6)return`$${(n/1e6).toFixed(2)}M`;if(n>=1e3)return`$${(n/1e3).toFixed(1)}K`;return`$${Math.round(n)}`};
+const pct=n=>`${(n*100).toFixed(1)}%`;
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const ago=h=>{if(h<1)return`${Math.round(h*60)}m`;if(h<24)return`${Math.round(h)}h`;if(h<168)return`${(h/24).toFixed(1)}d`;return`${(h/168).toFixed(1)}w`};
+const ts=d=>d?.toLocaleTimeString("it-IT",{hour:"2-digit",minute:"2-digit"})||"—";
+const ds=d=>d?.toLocaleDateString("it-IT",{day:"2-digit",month:"2-digit"})||"";
+
+// ─── Audio ─────────────────────────────────────────
+const playSound=sev=>{try{const c=new(window.AudioContext||window.webkitAudioContext)(),o=c.createOscillator(),g=c.createGain();o.connect(g);g.connect(c.destination);o.type=sev==="critical"?"sawtooth":"sine";o.frequency.value=sev==="critical"?880:660;g.gain.setValueAtTime(.3,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+(sev==="critical"?.8:.4));o.start(c.currentTime);o.stop(c.currentTime+1);if(sev==="critical")setTimeout(()=>{const o2=c.createOscillator(),g2=c.createGain();o2.connect(g2);g2.connect(c.destination);o2.type="sawtooth";o2.frequency.value=1100;g2.gain.setValueAtTime(.3,c.currentTime);g2.gain.exponentialRampToValueAtTime(.001,c.currentTime+.6);o2.start(c.currentTime);o2.stop(c.currentTime+.7)},300)}catch(e){}};
+
+// ─── Notifications ─────────────────────────────────
+const reqNotifPerm=async()=>{if(!("Notification" in window))return"unsupported";if(Notification.permission==="granted")return"granted";return await Notification.requestPermission()};
+const sendNotif=(title,body,sev)=>{if(Notification.permission!=="granted")return;try{const n=new Notification(title,{body,tag:`pm-${Date.now()}`,requireInteraction:sev==="critical",vibrate:[200,100,200]});setTimeout(()=>n.close(),15000)}catch(e){}};
+
+// ─── Telegram ──────────────────────────────────────
+const sendTG=async(tok,cid,msg)=>{if(!tok||!cid)return false;try{const r=await fetch(`https://api.telegram.org/bot${tok}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:cid,text:msg,parse_mode:"HTML"})});return r.ok}catch(e){return false}};
+
+// ─── EmailJS ───────────────────────────────────────
+let ejsLoaded=false;
+const loadEJS=()=>{if(ejsLoaded)return Promise.resolve();return new Promise((res,rej)=>{const s=document.createElement("script");s.src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js";s.onload=()=>{ejsLoaded=true;res()};s.onerror=()=>rej(new Error("EmailJS load failed"));document.head.appendChild(s)})};
+const buildEmailTxt=(sigs)=>{let t=`🔍 PM INSIDER SIGNAL DETECTOR\n${new Date().toLocaleString("it-IT")}\n${sigs.length} segnali (${sigs.filter(s=>s.maxSeverity==="critical").length} critici)\n${"─".repeat(36)}\n\n`;for(const s of sigs.slice(0,10)){t+=`${s.maxSeverity==="critical"?"🔴":s.maxSeverity==="alert"?"🟠":"🔵"} ${s.market.question}\nScore:${s.totalWeight} | Vol24h:${fmt(s.meta.vol24h)} | YES:${pct(s.meta.yesPrice)}\n`;for(const d of s.detections)t+=`  ${d.icon} ${d.label}: ${d.detail}\n`;t+=`  → https://polymarket.com/event/${s.market.slug}\n\n`}return t};
+const sendEJS=async(sid,tid,pk,to,sigs)=>{try{await loadEJS();const sum=`${sigs.length} segnali (${sigs.filter(s=>s.maxSeverity==="critical").length} critici)`;const r=await window.emailjs.send(sid,tid,{to_email:to,subject:`🔍 PM Alert: ${sum}`,message:buildEmailTxt(sigs),timestamp:new Date().toLocaleString("it-IT")},pk);return r.status===200}catch(e){console.error("EJS:",e);return false}};
+
+// ─── Platform detection (outside component) ───────
+const UA=navigator.userAgent||"";
+const IS_IOS=UA.indexOf("iPad")>=0||UA.indexOf("iPhone")>=0||UA.indexOf("iPod")>=0;
+const IS_ANDROID=UA.indexOf("Android")>=0;
+const IS_STANDALONE=window.matchMedia("(display-mode:standalone)").matches||window.navigator.standalone===true;
+const GEO_RE=new RegExp("politic|geopolit|military|war|conflict|government|election|diplomacy|sanction|regime","i");
+
+// ─── Signal Engine v2 — optimized from backtest ──────
+// Key improvements: sport filter, volume velocity, score multiplier,
+// book skew only on uncertain markets, confidence rating
+const SPORT_RE=new RegExp("nba|nfl|nhl|mlb|nascar|mma|ufc|epl|serie.a|bundesliga|ligue|premier.league|champions.league|ncaa|tennis|golf|cricket|wnba|mls|la.liga|football|basketball|baseball|hockey|soccer|boxing","i");
+
+function analyze(markets,ph,cfg){
+  const sigs=[];
+  const v24s=markets.map(m=>parseFloat(m.volume24hr)||0).filter(v=>v>0);
+  const medV=v24s.sort((a,b)=>a-b)[Math.floor(v24s.length/2)]||1000;
+  const tc={};
+  for(const m of markets)for(const t of m.tags||[]){const l=t.label||t.slug||t;tc[l]=(tc[l]||0)+1}
+
+  for(const m of markets){
+    const vol=parseFloat(m.volume)||0,v24=parseFloat(m.volume24hr)||0,liq=parseFloat(m.liquidity)||0;
+    const prices=JSON.parse(m.outcomePrices||"[]").map(Number),yP=prices[0]||0;
+    const cr=new Date(m.createdAt),aH=(Date.now()-cr)/36e5;
+    const tags=(m.tags||[]).map(t=>t.label||t.slug||""),sp=m._spread||0,bi=m._bookImbalance||0,prH=ph[m.id]||null;
+    const q=(m.question||"").toLowerCase();
+
+    // FILTER: Skip sport markets entirely
+    const isSport=tags.some(t=>SPORT_RE.test(t))||SPORT_RE.test(q);
+    if(isSport)continue;
+
+    const det=[];
+
+    // NEW TYPE — highest precision signal (100% in backtest)
+    const rare=tags.some(t=>(tc[t]||0)<=cfg.rareCategoryMax);
+    if(rare&&aH<cfg.newTypeMaxAge)det.push({signal:"NEW_TYPE",icon:"🆕",label:"Nuova tipologia",severity:v24>cfg.newTypeMinVol?"critical":"watch",weight:v24>cfg.newTypeMinVol?4:2,detail:`Cat. rara — creato ${ago(aH)} fa`,insight:"Precisione 100% nel backtest. Mercati nicchia = veicolo insider preferito."});
+
+    // VOLUME SURGE — now checks velocity (concentrated vs gradual)
+    const vR=vol>0?v24/vol:0,vM=v24/Math.max(medV,1);
+    // Volume velocity: if market is young (< 72h) and vol24h is high relative to total, volume is CONCENTRATED
+    const isConcentrated=aH<72&&vR>0.5; // >50% of all-time vol in 24h on a young market
+    if(v24>cfg.surgeMinVol&&(vR>cfg.surgeRatio||vM>cfg.surgeVsMedian)){
+      const big=vR>cfg.surgeRatio*2||vM>cfg.surgeVsMedian*3;
+      // Boost weight if concentrated, reduce if gradual
+      const velBoost=isConcentrated?2:0;
+      const w=big?5+velBoost:3+velBoost;
+      det.push({signal:"VOLUME_SURGE",icon:"📊",label:"Picco volume",severity:big||isConcentrated?"critical":"alert",weight:Math.min(w,7),
+        detail:`24h ${fmt(v24)}=${(vR*100).toFixed(0)}% tot, ${vM.toFixed(1)}x med${isConcentrated?" ⚡CONCENTRATO":""}`,
+        insight:isConcentrated?"Volume concentrato in poche ore su mercato giovane = pattern tipico insider (Maduro, Iran).":"Volume elevato ma potrebbe essere graduale. Verificare timing rispetto a notizie pubbliche."});
+    }
+
+    // PRICE DISLOCATION
+    if(prH&&prH.length>=3){const r=prH.slice(-6),sw=Math.abs((r[r.length-1]?.p||yP)-(r[0]?.p||yP));if(sw>cfg.priceSwingMin)det.push({signal:"PRICE_DISLOCATION",icon:"⚡",label:"Prezzo dislocato",severity:sw>cfg.priceSwingMin*2?"critical":"alert",weight:sw>cfg.priceSwingMin*2?5:3,detail:`Swing ${pct(sw)}`,insight:"Verificare: swing PRIMA di notizie = sospetto. DOPO notizie = reazione legittima."})}
+
+    // VOL/LIQ IMBALANCE — high precision (67% in backtest)
+    if(v24>cfg.surgeMinVol&&liq>0&&v24/liq>cfg.volLiqImbalance)det.push({signal:"LIQ_IMBALANCE",icon:"💧",label:"Squil. Vol/Liq",severity:v24/liq>cfg.volLiqImbalance*2?"critical":"alert",weight:v24/liq>cfg.volLiqImbalance*2?4:2,detail:`${fmt(v24)} su ${fmt(liq)} liq (${(v24/liq).toFixed(1)}x)`,insight:"Precisione 67%. Acquisto aggressivo su book sottile = urgenza tipica insider."});
+
+    // BOOK SKEW — now only on UNCERTAIN markets (price 20-80%), raised threshold
+    const isUncertain=yP>0.2&&yP<0.8;
+    if(Math.abs(bi)>cfg.bookSkewThreshold&&isUncertain){
+      const dir=bi>0?"BID":"ASK";
+      det.push({signal:"BOOK_SKEW",icon:"📐",label:"Book sbilanciato",severity:Math.abs(bi)>cfg.bookSkewThreshold*1.5?"alert":"watch",weight:Math.abs(bi)>cfg.bookSkewThreshold*1.5?3:1,detail:`${pct(Math.abs(bi))} → ${dir} (mkt incerto ${pct(yP)})`,insight:"Book sbilanciato su mercato incerto (20-80%) indica pressione informata, non consenso."});
+    }
+
+    // NICHE HEAT
+    if(vol<cfg.nicheMaxTotalVol&&v24>cfg.nicheMinDailyVol&&v24/Math.max(vol,1)>cfg.nicheHeatRatio)det.push({signal:"NICHE_HEAT",icon:"🔍",label:"Nicchia attiva",severity:"alert",weight:3,detail:`${fmt(vol)} tot ma ${fmt(v24)} oggi`,insight:"Mercati oscuri improvvisamente attivi = pattern Axiom, Google YIS."});
+
+    // GEO SENSITIVE
+    const eD=m.endDate?new Date(m.endDate):null,hE=eD?(eD-Date.now())/36e5:Infinity;
+    const isG=tags.some(t=>GEO_RE.test(t));
+    if(isG&&hE<cfg.geoExpiryHours&&v24>cfg.surgeMinVol)det.push({signal:"GEO_SENSITIVE",icon:"🌐",label:"Geo sensibile",severity:"critical",weight:4,detail:`Scad. ${ago(hE)}, vol ${fmt(v24)}`,insight:"Verificare: volume pre-notizia = insider. Post-notizia = reazione pubblica."});
+
+    // INFORMED FLOW — highest precision (100% in backtest)
+    if(sp>cfg.spreadWide&&v24>cfg.surgeMinVol)det.push({signal:"INFORMED_FLOW",icon:"🎯",label:"Flusso informato",severity:"alert",weight:3,detail:`Spread ${pct(sp)}, vol ${fmt(v24)}`,insight:"Precisione 100%. MM allarga spread per adverse selection — volume in queste condizioni = fortemente sospetto."});
+
+    if(det.length>0){
+      let tw=det.reduce((s,d)=>s+d.weight,0);
+
+      // SCORE MULTIPLIER based on signal count (from backtest: real insider = 6-7 signals, FP = 2-3)
+      const nSigs=det.length;
+      if(nSigs>=5)tw=Math.round(tw*1.5);      // Strong combo = boost
+      else if(nSigs>=4)tw=Math.round(tw*1.2);
+      else if(nSigs<=2)tw=Math.round(tw*0.6);  // Few signals = likely noise
+
+      // CONFIDENCE LEVEL based on which signals fired
+      const hasGoldSignal=det.some(d=>d.signal==="NEW_TYPE"||d.signal==="INFORMED_FLOW"||d.signal==="LIQ_IMBALANCE");
+      const hasConcentrated=det.some(d=>d.detail&&d.detail.includes("CONCENTRATO"));
+      const confidence=nSigs>=5&&hasGoldSignal?"ALTA":nSigs>=3&&(hasGoldSignal||hasConcentrated)?"MEDIA":"BASSA";
+
+      const ms=det.some(d=>d.severity==="critical")?"critical":det.some(d=>d.severity==="alert")?"alert":"watch";
+      sigs.push({market:m,detections:det,totalWeight:tw,maxSeverity:ms,confidence,meta:{vol,vol24h:v24,liq,yesPrice:yP,ageH:aH,spread:sp,bookImbalance:bi,tags,hoursToExpiry:hE,priceHistory:prH}});
+    }
+  }
+  return sigs.filter(s=>s.totalWeight>=cfg.minAlertScore).sort((a,b)=>b.totalWeight-a.totalWeight);
+}
+
+const SEV={critical:{color:"#ff2d55",bg:"#ff2d5512",bdr:"#ff2d5540",l:"CRITICO"},alert:{color:"#ff9f0a",bg:"#ff9f0a12",bdr:"#ff9f0a40",l:"ALLERTA"},watch:{color:"#64d2ff",bg:"#64d2ff12",bdr:"#64d2ff40",l:"MONITOR"}};
+
+// ─── Spark ─────────────────────────────────────────
+function Spark({data,w=90,h=24}){if(!data||data.length<2)return null;const vs=data.map(d=>d.p),mn=Math.min(...vs),mx=Math.max(...vs),rg=mx-mn||1;const pts=vs.map((v,i)=>`${(i/(vs.length-1))*w},${h-((v-mn)/rg)*h}`).join(" ");const up=vs[vs.length-1]>vs[0];return React.createElement("svg",{width:w,height:h,style:{display:"block"}},React.createElement("polyline",{points:pts,fill:"none",stroke:up?"#34c759":"#ff2d55",strokeWidth:"1.5",strokeLinejoin:"round"}),React.createElement("circle",{cx:w,cy:h-((vs[vs.length-1]-mn)/rg)*h,r:"2",fill:up?"#34c759":"#ff2d55"}))}
+
+// ─── Signal Card ───────────────────────────────────
+function Card({signal:s,rank:r,translation,onTranslate,isTranslating}){
+  const[open,setOpen]=useState(false);
+  const m=s.market,sv=SEV[s.maxSeverity],oc=JSON.parse(m.outcomes||"[]"),pr=JSON.parse(m.outcomePrices||"[]").map(Number);
+  const cols=["#34c759","#ff2d55","#007aff","#ff9f0a","#bf5af2"];
+  return(
+    <div className="card" onClick={()=>setOpen(!open)} style={{background:"var(--card)",border:`1px solid ${open?sv.color+"60":"var(--brd)"}`,borderLeft:`3px solid ${sv.color}`,borderRadius:8,padding:"14px 16px",marginBottom:8,cursor:"pointer"}}>
+      <div style={{display:"flex",gap:10,alignItems:"flex-start"}}>
+        <div style={{textAlign:"center",minWidth:36,flexShrink:0}}>
+          <div style={{fontSize:17,fontWeight:800,fontFamily:"var(--m)",color:sv.color}}>{r}</div>
+          <div style={{fontSize:14,fontWeight:700,letterSpacing:".7px",padding:"5px 10px",borderRadius:3,background:sv.bg,color:sv.color,border:`1px solid ${sv.bdr}`,marginTop:2}}>{sv.l}</div>
+          {s.confidence&&<div style={{fontSize:10,fontWeight:700,letterSpacing:".5px",padding:"4px 8px",borderRadius:2,marginTop:2,background:s.confidence==="ALTA"?"#34c75920":s.confidence==="MEDIA"?"#ff9f0a20":"#64d2ff20",color:s.confidence==="ALTA"?"#34c759":s.confidence==="MEDIA"?"#ff9f0a":"#64d2ff"}}>{s.confidence}</div>}
+        </div>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{display:"flex",alignItems:"center",gap:6}}>
+            <h3 style={{margin:0,fontSize:13,fontWeight:600,lineHeight:1.4,flex:1}}>{m.question}</h3>
+            <span style={{fontSize:15,color:"var(--dim)",fontFamily:"var(--m)",flexShrink:0}}>{s.detections.length}/8</span>
+          </div>
+          {translation&&<div style={{fontSize:15,color:"var(--blu)",marginTop:3,fontStyle:"italic",lineHeight:1.4}}>{translation}</div>}
+          {!translation&&<button onClick={e=>{e.stopPropagation();onTranslate&&onTranslate(m.id,m.question)}} style={{marginTop:3,padding:"6px 12px",borderRadius:3,border:"1px solid var(--brd2)",background:"transparent",color:"var(--dim3)",fontSize:13,display:"inline-flex",alignItems:"center",gap:3}}>{isTranslating?"⏳":"🇮🇹"} {isTranslating?"Traduco...":"Traduci"}</button>}
+          <div style={{display:"flex",flexWrap:"wrap",gap:3,marginTop:5}}>
+            {s.detections.map((d,i)=><span key={i} style={{display:"inline-flex",alignItems:"center",gap:3,padding:"6px 12px",borderRadius:4,fontSize:13,fontWeight:600,background:SEV[d.severity].bg,color:SEV[d.severity].color,border:`1px solid ${SEV[d.severity].bdr}`}}>{d.icon} {d.label}</span>)}
+          </div>
+        </div>
+        <div style={{textAlign:"right",flexShrink:0}}>
+          <div style={{fontSize:18,fontWeight:800,fontFamily:"var(--m)"}}>{pct(s.meta.yesPrice)}</div>
+          <div style={{fontSize:15,color:"var(--dim)",marginBottom:2}}>YES</div>
+          <Spark data={s.meta.priceHistory}/>
+        </div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:4,marginTop:8,paddingLeft:46}}>
+        {[["Vol24h",fmt(s.meta.vol24h)],["Tot",fmt(s.meta.vol)],["Liq",fmt(s.meta.liq)],["Spread",s.meta.spread?pct(s.meta.spread):"—"],["Età",ago(s.meta.ageH)]].map(([k,v])=><div key={k}><div style={{fontSize:14,color:"var(--dim)",textTransform:"uppercase",letterSpacing:".6px",fontWeight:600}}>{k}</div><div style={{fontSize:14,fontWeight:700,fontFamily:"var(--m)",color:"var(--txt2)"}}>{v}</div></div>)}
+      </div>
+      {open&&<div style={{marginTop:10,paddingTop:10,borderTop:"1px solid var(--brd)",paddingLeft:46}}>
+        {oc.length>0&&<div style={{marginBottom:10}}><div style={{fontSize:14,color:"var(--dim)",textTransform:"uppercase",letterSpacing:".6px",fontWeight:600,marginBottom:4}}>Probabilità</div><div style={{display:"flex",borderRadius:4,overflow:"hidden",height:18}}>{oc.map((o,i)=>{const p=pr[i]||0;return <div key={i} style={{width:`${Math.max(p*100,4)}%`,background:cols[i%5]+"25",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:700,color:cols[i%5],fontFamily:"var(--m)",borderRight:i<oc.length-1?"1px solid var(--bg)":"none"}}>{p>.06&&`${o} ${pct(p)}`}</div>})}</div></div>}
+        {s.detections.map((d,i)=><div key={i} style={{padding:"7px 10px",marginBottom:5,borderRadius:5,background:SEV[d.severity].bg,borderLeft:`2px solid ${SEV[d.severity].color}`}}><div style={{fontSize:14,fontWeight:700,color:SEV[d.severity].color,marginBottom:2}}>{d.icon} {d.label}</div><div style={{fontSize:14,color:"var(--txt2)",lineHeight:1.5}}>{d.detail}</div><div style={{fontSize:13,color:"var(--dim3)",fontStyle:"italic",marginTop:3}}>💡 {d.insight}</div></div>)}
+        {s.meta.tags.length>0&&<div style={{display:"flex",gap:3,flexWrap:"wrap",marginTop:5}}>{s.meta.tags.map((t,i)=><span key={i} style={{padding:"2px 5px",borderRadius:3,fontSize:15,background:"#1a1a28",color:"var(--dim3)",border:"1px solid var(--brd2)"}}>{t}</span>)}</div>}
+        <a href={`https://polymarket.com/event/${m.slug}`} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{display:"inline-block",marginTop:8,fontSize:14,color:sv.color,textDecoration:"none",fontWeight:700}}>Apri su Polymarket →</a>
+      </div>}
+    </div>
+  );
+}
+
+// ─── Config ────────────────────────────────────────
+const DEF_CFG={rareCategoryMax:3,newTypeMaxAge:72,newTypeMinVol:5000,surgeMinVol:3000,surgeRatio:.2,surgeVsMedian:5,priceSwingMin:.1,volLiqImbalance:4,bookSkewThreshold:.75,nicheMaxTotalVol:50000,nicheMinDailyVol:2000,nicheHeatRatio:.15,geoExpiryHours:72,spreadWide:.06,minAlertScore:10};
+const CFG_M={rareCategoryMax:{l:"Cat. rara max",mn:1,mx:10,s:1,d:"Quanti mercati deve avere una categoria per essere 'rara'. Categorie con pochi mercati = terreno insider (es. Google YIS)."},newTypeMaxAge:{l:"Età nuova tipo (h)",mn:12,mx:336,s:12,d:"Ore dalla creazione per considerare un mercato 'nuovo'. Il mercato Maduro fu creato e sfruttato nelle stesse ore."},surgeMinVol:{l:"Vol min surge $",mn:500,mx:50000,s:500,d:"Volume 24h minimo per segnalare un picco. Caso Maduro: $32K in ore. Caso Iran: $529M totali."},surgeRatio:{l:"Ratio surge",mn:.05,mx:.8,s:.05,d:"Se vol24h supera questa % del volume totale = allarme. 0.20 = 20% dello storico in un giorno."},priceSwingMin:{l:"Swing min prezzo",mn:.03,mx:.5,s:.01,d:"Variazione minima prezzo per segnalare dislocazione. Maduro: da 7% a 100%. 0.10 = 10 punti."},volLiqImbalance:{l:"Vol/Liq ratio",mn:1,mx:20,s:.5,d:"Rapporto volume/liquidità. Alto = acquisto aggressivo su book sottile. Chi sa qualcosa accetta qualsiasi prezzo."},bookSkewThreshold:{l:"Book skew",mn:.3,mx:.95,s:.05,d:"Sbilanciamento orderbook (0-1). 0.6 = 60% del book su un lato. Pressione direzionale = possibile insider."},geoExpiryHours:{l:"Geo finestra (h)",mn:12,mx:336,s:12,d:"Ore alla scadenza per mercati geopolitici. Iran e Maduro avevano scadenze ravvicinate + volumi improvvisi."},spreadWide:{l:"Spread soglia",mn:.02,mx:.2,s:.01,d:"Spread bid-ask min per 'flusso informato'. MM allargano spread quando sentono insider. Volume su spread largo = premium pagato."},minAlertScore:{l:"Score min alert",mn:0,mx:25,s:1,d:"Score minimo per mostrare un segnale. Dal backtest: veri insider = 23-27, falsi positivi = 5-15. Valore 10 = buon compromesso, 15 = solo alta confidenza."}};
+const PRESETS=[{l:"30min",m:30},{l:"1h",m:60},{l:"2h",m:120},{l:"4h",m:240},{l:"8h",m:480},{l:"12h",m:720},{l:"24h",m:1440}];
+
+// ═══ MAIN APP ═══
+function App(){
+  const saved=useRef(loadSettings()).current;
+  const[signals,setSignals]=useState([]);
+  const[loading,setLoading]=useState(false);
+  const[error,setError]=useState(null);
+  const[progress,setProgress]=useState({t:"",p:0});
+  const[lastScan,setLastScan]=useState(null);
+  const[stats,setStats]=useState(null);
+  const[cfg,setCfg]=useState(saved.cfg||DEF_CFG);
+  const[fSev,setFSev]=useState("all");
+  const[fSig,setFSig]=useState("all");
+  const[sort,setSort]=useState("weight");
+  const abRef=useRef(null);
+  const[panel,setPanel]=useState(null);
+  const[schOn,setSchOn]=useState(false);
+  const[schMin,setSchMin]=useState(saved.schMin||60);
+  const[custMin,setCustMin]=useState("");
+  const[nextScan,setNextScan]=useState(null);
+  const[cd,setCd]=useState("");
+  const schRef=useRef(null);
+  const[ch,setCh]=useState(saved.ch||{browser:false,sound:true,email:false,telegram:false});
+  const[notifSt,setNotifSt]=useState("unknown");
+  const[ejsPK,setEjsPK]=useState(saved.ejsPK||"");
+  const[ejsSI,setEjsSI]=useState(saved.ejsSI||"");
+  const[ejsTI,setEjsTI]=useState(saved.ejsTI||"");
+  const[emTo,setEmTo]=useState(saved.emTo||"");
+  const[tgTok,setTgTok]=useState(saved.tgTok||"");
+  const[tgCid,setTgCid]=useState(saved.tgCid||"");
+  const[minSev,setMinSev]=useState(saved.minSev||"alert");
+  const[aLog,setALog]=useState([]);
+  const[hist,setHist]=useState([]);
+
+  // ── Translation ──
+  const[translations,setTranslations]=useState({});
+  const[translating,setTranslating]=useState(null);
+  const translateText=useCallback(async(id,text)=>{
+    if(translations[id])return;
+    setTranslating(id);
+    try{
+      // MyMemory Translation API - free, no key needed, 5000 chars/day
+      const url=`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|it`;
+      const r=await fetch(url);
+      if(r.ok){
+        const d=await r.json();
+        const translated=d.responseData?.translatedText;
+        if(translated&&translated.toLowerCase()!==text.toLowerCase()){
+          setTranslations(p=>({...p,[id]:translated}));
+        }else{
+          // Fallback: semplice dizionario per termini comuni di Polymarket
+          const simple=text
+            .replace(/\bWill\b/gi,"")
+            .replace(/\bby\b/gi,"entro")
+            .replace(/\bbefore\b/gi,"prima di")
+            .replace(/\bafter\b/gi,"dopo")
+            .replace(/\bWin\b/gi,"Vincerà")
+            .replace(/\blose\b/gi,"perderà")
+            .replace(/\breached?\b/gi,"raggiungere")
+            .replace(/\bprice\b/gi,"prezzo")
+            .replace(/\babove\b/gi,"sopra")
+            .replace(/\bbelow\b/gi,"sotto")
+            .replace(/\bYes\b/gi,"Sì")
+            .replace(/\bNo\b/gi,"No")
+            .replace(/\?/g,"?")
+            .trim();
+          setTranslations(p=>({...p,[id]:simple}));
+        }
+      }
+    }catch(e){
+      console.log("Translation failed:",e);
+      // Fallback offline
+      setTranslations(p=>({...p,[id]:"[Traduzione non disponibile]"}));
+    }
+    setTranslating(null);
+  },[translations]);
+  const translateAll=useCallback(async(sigs)=>{
+    for(const s of sigs.slice(0,15)){
+      if(!translations[s.market.id]){
+        await translateText(s.market.id,s.market.question);
+        await new Promise(r=>setTimeout(r,500)); // Rate limit
+      }
+    }
+  },[translations,translateText]);
+
+  // ── Text size ──
+  const[textScale,setTextScale]=useState(parseFloat(saved.textScale||1));
+  useEffect(()=>{const r=document.getElementById("root");if(r)r.style.zoom=textScale;saveSettings({cfg,schMin,ch,ejsPK,ejsSI,ejsTI,emTo,tgTok,tgCid,minSev,textScale})},[textScale]);
+
+  // ── Install PWA state ──
+  const[installPrompt,setInstallPrompt]=useState(null);
+  const[showInstall,setShowInstall]=useState(false);
+  const isIOS=IS_IOS;
+  const isAndroid=IS_ANDROID;
+  const isStandalone=IS_STANDALONE;
+
+  // Listen for install prompt (Android/Chrome)
+  useEffect(()=>{
+    const handler=(e)=>{e.preventDefault();setInstallPrompt(e);if(!isStandalone&&!localStorage.getItem('pm_install_dismissed'))setShowInstall(true)};
+    window.addEventListener('beforeinstallprompt',handler);
+    // Show iOS install hint after 3s if not standalone
+    if(isIOS&&!isStandalone&&!localStorage.getItem('pm_install_dismissed')){setTimeout(()=>setShowInstall(true),3000)}
+    return()=>window.removeEventListener('beforeinstallprompt',handler);
+  },[]);
+
+  const doInstall=async()=>{if(installPrompt){installPrompt.prompt();const r=await installPrompt.userChoice;if(r.outcome==='accepted')setShowInstall(false);setInstallPrompt(null)}};
+  const dismissInstall=()=>{setShowInstall(false);localStorage.setItem('pm_install_dismissed','1')};
+
+  // Persist settings on change
+  useEffect(()=>{saveSettings({cfg,schMin,ch,ejsPK,ejsSI,ejsTI,emTo,tgTok,tgCid,minSev,textScale})},[cfg,schMin,ch,ejsPK,ejsSI,ejsTI,emTo,tgTok,tgCid,minSev,textScale]);
+
+  useEffect(()=>{if("Notification" in window)setNotifSt(Notification.permission);else setNotifSt("unsupported")},[]);
+
+  // Countdown
+  useEffect(()=>{if(!schOn||!nextScan){setCd("");return}const iv=setInterval(()=>{const d=nextScan-Date.now();if(d<=0){setCd("Scanning...");return}const m=Math.floor(d/6e4),s=Math.floor((d%6e4)/1e3);setCd(`${m}:${s.toString().padStart(2,"0")}`)},1000);return()=>clearInterval(iv)},[schOn,nextScan]);
+
+  // Alerts
+  const fire=useCallback(async(dets)=>{
+    const so={critical:0,alert:1,watch:2},mi=so[minSev]??1;
+    const ta=dets.filter(s=>so[s.maxSeverity]<=mi);if(!ta.length)return;
+    const sum=`${ta.length} segnali (${ta.filter(s=>s.maxSeverity==="critical").length} crit)`,top=ta[0];
+    if(ch.sound)playSound(top.maxSeverity);
+    if(ch.browser&&Notification.permission==="granted")sendNotif(`🔍 PM: ${sum}`,`Top: ${top.market.question}`,top.maxSeverity);
+    if(ch.telegram&&tgTok&&tgCid){let msg=`<b>🔍 PM Insider Alert</b>\n${new Date().toLocaleString("it-IT")}\n\n<b>${sum}</b>\n\n`;for(const s of ta.slice(0,5)){msg+=`${s.maxSeverity==="critical"?"🔴":"🟠"} <b>${s.market.question}</b>\nScore:${s.totalWeight} | ${fmt(s.meta.vol24h)} | ${pct(s.meta.yesPrice)}\n${s.detections.map(d=>`  ${d.icon} ${d.label}`).join("\n")}\n\n`}const ok=await sendTG(tgTok,tgCid,msg);setALog(p=>[...p,{t:new Date(),ch:"telegram",ok,n:ta.length}].slice(-50))}
+    if(ch.email&&emTo&&ejsPK&&ejsSI&&ejsTI){const ok=await sendEJS(ejsSI,ejsTI,ejsPK,emTo,ta);setALog(p=>[...p,{t:new Date(),ch:"email",ok,n:ta.length}].slice(-50))}
+    setALog(p=>[...p,{t:new Date(),ch:"summary",n:ta.length,c:ta.filter(s=>s.maxSeverity==="critical").length}].slice(-50));
+  },[ch,minSev,emTo,ejsPK,ejsSI,ejsTI,tgTok,tgCid]);
+
+  // Scan
+  const scan=useCallback(async(auto=false)=>{
+    if(loading)return;setLoading(true);setError(null);if(!auto)setSignals([]);
+    abRef.current=new AbortController();const sg=abRef.current.signal;
+    try{
+      // PHASE 1: Fetch markets (sequential, not parallel — proxy friendly)
+      let all=[];const pgs=useProxy?4:8; // fewer pages when proxied
+      for(let i=0;i<pgs;i++){
+        setProgress({t:`Mercati (${i+1}/${pgs})...`,p:((i+1)/pgs)*30});
+        const r=await smartFetch(`${GAMMA}/markets?closed=false&active=true&limit=100&offset=${i*100}&order=volume24hr&ascending=false`,{signal:sg});
+        if(!r){setProgress({t:"Connessione instabile, analizzo dati parziali...",p:30});break}
+        const d=await r.json();
+        if(!d.length)break;
+        all=all.concat(d);
+        await sleep(useProxy?500:250);
+      }
+      if(!all.length)throw new Error("Nessun mercato caricato. Controlla la connessione.");
+
+      // PHASE 2: Orderbook — only top 30 (not 100), sequential batches of 2
+      setProgress({t:"Orderbook...",p:35});
+      const top=all.filter(m=>(parseFloat(m.volume24hr)||0)>0).sort((a,b)=>(parseFloat(b.volume24hr)||0)-(parseFloat(a.volume24hr)||0)).slice(0,useProxy?30:80);
+      let obDone=0;
+      for(let i=0;i<top.length;i+=(useProxy?2:5)){
+        const batch=top.slice(i,i+(useProxy?2:5));
+        await Promise.all(batch.map(async m=>{try{
+          const tks=JSON.parse(m.clobTokenIds||"[]");if(!tks[0])return;
+          const bR=await smartFetch(`${CLOB}/book?token_id=${tks[0]}`,{signal:sg});
+          if(!bR)return;
+          const bk=await bR.json();
+          const bV=(bk.bids||[]).reduce((s,b)=>s+parseFloat(b.size||0),0);
+          const aV=(bk.asks||[]).reduce((s,a)=>s+parseFloat(a.size||0),0);
+          const tt=bV+aV;
+          m._bookImbalance=tt>0?(bV-aV)/tt:0;
+          const bb=bk.bids?.[0]?.price?parseFloat(bk.bids[0].price):0;
+          const ba=bk.asks?.[0]?.price?parseFloat(bk.asks[0].price):1;
+          m._spread=ba-bb;
+        }catch(e){}}));
+        obDone=Math.min(i+(useProxy?2:5),top.length);
+        setProgress({t:`OB (${obDone}/${top.length})`,p:35+(obDone/top.length)*35});
+        await sleep(useProxy?600:180);
+      }
+
+      // PHASE 3: Price history — only top 20 when proxied, sequential
+      setProgress({t:"Prezzi...",p:72});
+      const prH={};
+      const cands=top.slice(0,useProxy?20:50);
+      for(let i=0;i<cands.length;i+=(useProxy?2:5)){
+        const batch=cands.slice(i,i+(useProxy?2:5));
+        await Promise.all(batch.map(async m=>{try{
+          const tks=JSON.parse(m.clobTokenIds||"[]");if(!tks[0])return;
+          const r=await smartFetch(`${CLOB}/prices-history?market=${tks[0]}&interval=1d&fidelity=60`,{signal:sg});
+          if(!r)return;
+          const d=await r.json();
+          if(d.history?.length)prH[m.id]=d.history.map(h=>({t:h.t,p:parseFloat(h.p)}));
+        }catch(e){}}));
+        setProgress({t:`Prezzi (${Math.min(i+(useProxy?2:5),cands.length)}/${cands.length})`,p:72+(Math.min(i+(useProxy?2:5),cands.length)/cands.length)*20});
+        await sleep(useProxy?600:180);
+      }
+
+      // PHASE 4: Analyze
+      setProgress({t:"Analisi...",p:95});await sleep(50);
+      const det=analyze(all,prH,cfg);setSignals(det);
+      const st={scanned:all.length,signals:det.length,critical:det.filter(s=>s.maxSeverity==="critical").length,alert:det.filter(s=>s.maxSeverity==="alert").length,watch:det.filter(s=>s.maxSeverity==="watch").length};
+      setStats(st);const now=new Date();setLastScan(now);setHist(p=>[...p,{t:now,...st,auto}].slice(-100));setProgress({t:"",p:100});
+      if(det.length>0)await fire(det);
+    }catch(e){if(e.name!=="AbortError")setError(e.message)}finally{setLoading(false)}
+  },[cfg,loading,fire]);
+
+  // Scheduler
+  useEffect(()=>{if(schRef.current)clearInterval(schRef.current);if(!schOn){setNextScan(null);return}const ms=schMin*6e4;setNextScan(new Date(Date.now()+ms));schRef.current=setInterval(()=>{setNextScan(new Date(Date.now()+ms));scan(true)},ms);return()=>{if(schRef.current)clearInterval(schRef.current)}},[schOn,schMin]);
+
+  const disp=useMemo(()=>{let l=signals;if(fSev!=="all")l=l.filter(s=>s.maxSeverity===fSev);if(fSig!=="all")l=l.filter(s=>s.detections.some(d=>d.signal===fSig));if(sort==="weight")l=[...l].sort((a,b)=>b.totalWeight-a.totalWeight);if(sort==="volume")l=[...l].sort((a,b)=>b.meta.vol24h-a.meta.vol24h);if(sort==="newest")l=[...l].sort((a,b)=>a.meta.ageH-b.meta.ageH);return l},[signals,fSev,fSig,sort]);
+  const sigC=useMemo(()=>{const c={};for(const s of signals)for(const d of s.detections)c[d.signal]=(c[d.signal]||0)+1;return c},[signals]);
+  const toggle=p=>setPanel(v=>v===p?null:p);
+
+  const PS={padding:"18px 20px",background:"var(--srf)",borderRadius:12,border:"1px solid var(--brd)",marginTop:12};
+  const IS={padding:"12px 14px",borderRadius:8,border:"1px solid var(--brd2)",background:"var(--card)",color:"var(--txt2)",fontSize:15,fontFamily:"var(--m)",width:"100%",boxSizing:"border-box",outline:"none",minHeight:48};
+  const TB=a=>({padding:"10px 18px",borderRadius:8,border:`1px solid ${a?"#34c75940":"var(--brd2)"}`,background:a?"#34c75918":"var(--card)",color:a?"var(--grn)":"var(--dim3)",fontSize:14,fontWeight:600,minHeight:44});
+
+  return(
+    <div style={{maxWidth:600,margin:"0 auto",minHeight:"100vh",minHeight:"100dvh"}}>
+      {/* HEADER — minimal */}
+      <header style={{padding:"env(safe-area-inset-top,16px) 20px 14px",borderBottom:"1px solid var(--brd)",background:"linear-gradient(180deg,#0e0e16,var(--bg))",position:"sticky",top:0,zIndex:10}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <div style={{width:10,height:10,borderRadius:"50%",background:schOn?"var(--grn)":loading?"var(--org)":"var(--dim)",boxShadow:schOn?"0 0 10px #34c75960":"none",animation:schOn?"pulse2 2s ease infinite":"none"}}/>
+            <div>
+              <div style={{fontSize:18,fontWeight:700,letterSpacing:"-.3px"}}>PM SCANNER</div>
+              {schOn&&cd&&<div style={{fontSize:15,color:"var(--grn)",fontFamily:"var(--m)",fontWeight:600}}>LIVE {cd}</div>}
+            </div>
+          </div>
+          {loading&&<div style={{fontSize:13,color:"var(--org)",fontFamily:"var(--m)",display:"flex",alignItems:"center",gap:6}}><span style={{animation:"pulse2 1.5s ease infinite"}}>●</span>{progress.t}</div>}
+        </div>
+
+        {/* INSTALL PANEL */}
+        {panel==="install"&&<div style={PS}>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>📲 Installa App</div>
+
+          {isStandalone?
+            <div style={{textAlign:"center",padding:16,color:"var(--grn)",fontSize:15,fontWeight:600}}>✅ App già installata!</div>
+          :<>
+            {/* Direct install button (Chrome/Edge) */}
+            {installPrompt&&<div style={{marginBottom:14}}>
+              <button onClick={doInstall} style={{width:"100%",padding:"12px",borderRadius:8,background:"linear-gradient(135deg,#bf5af2,#8b5cf6)",color:"#fff",fontSize:13,fontWeight:700,letterSpacing:".3px",marginBottom:8}}>
+                📱 Installa PM Scanner
+              </button>
+              <div style={{fontSize:14,color:"var(--dim)",textAlign:"center"}}>L'app verrà aggiunta alla home del tuo dispositivo</div>
+            </div>}
+
+            {/* iOS instructions — always visible */}
+            <div style={{marginBottom:10,padding:12,borderRadius:6,background:"var(--card)",border:`1px solid ${isIOS?"var(--blu)40":"var(--brd)"}`}}>
+              <div style={{fontSize:14,fontWeight:700,color:"var(--blu)",marginBottom:8}}>🍎 iPhone / iPad (Safari)</div>
+              <div style={{fontSize:14,color:"var(--txt2)",lineHeight:1.7}}>
+                <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"flex-start"}}><span style={{color:"var(--blu)",fontWeight:700,fontSize:15,flexShrink:0}}>1.</span><span>Apri l'URL dell'app in <strong style={{color:"var(--txt)"}}>Safari</strong> (obbligatorio — Chrome e Firefox su iOS non supportano PWA)</span></div>
+                <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"flex-start"}}><span style={{color:"var(--blu)",fontWeight:700,fontSize:15,flexShrink:0}}>2.</span><span>Tocca l'icona <strong style={{color:"var(--txt)"}}>Condividi</strong> <span style={{fontSize:16}}>⬆</span> (rettangolo con freccia in su) nella barra in basso</span></div>
+                <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"flex-start"}}><span style={{color:"var(--blu)",fontWeight:700,fontSize:15,flexShrink:0}}>3.</span><span>Scorri in basso e tocca <strong style={{color:"var(--txt)"}}>"Aggiungi a schermata Home"</strong> <span style={{fontSize:14}}>➕</span></span></div>
+                <div style={{display:"flex",gap:8,alignItems:"flex-start"}}><span style={{color:"var(--blu)",fontWeight:700,fontSize:15,flexShrink:0}}>4.</span><span>Tocca <strong style={{color:"var(--txt)"}}>"Aggiungi"</strong> in alto a destra — l'icona PM Scanner apparirà nella home</span></div>
+              </div>
+            </div>
+
+            {/* Android instructions — always visible */}
+            <div style={{marginBottom:10,padding:12,borderRadius:6,background:"var(--card)",border:`1px solid ${isAndroid?"var(--grn)40":"var(--brd)"}`}}>
+              <div style={{fontSize:14,fontWeight:700,color:"var(--grn)",marginBottom:8}}>🤖 Android (Chrome)</div>
+              <div style={{fontSize:14,color:"var(--txt2)",lineHeight:1.7}}>
+                <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}><span style={{color:"var(--grn)",fontWeight:700,fontSize:15,flexShrink:0}}>1.</span><span>Apri l'URL dell'app in <strong style={{color:"var(--txt)"}}>Chrome</strong></span></div>
+                <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}><span style={{color:"var(--grn)",fontWeight:700,fontSize:15,flexShrink:0}}>2.</span><span>Apparirà un banner in basso <strong style={{color:"var(--txt)"}}>"Installa PM Scanner"</strong> — toccalo</span></div>
+                <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}><span style={{color:"var(--grn)",fontWeight:700,fontSize:15,flexShrink:0}}>3.</span><span>Se non appare: tocca il menu <strong style={{color:"var(--txt)"}}>⋮</strong> (tre puntini) in alto a destra</span></div>
+                <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}><span style={{color:"var(--grn)",fontWeight:700,fontSize:15,flexShrink:0}}>4.</span><span>Seleziona <strong style={{color:"var(--txt)"}}>"Installa app"</strong> o <strong style={{color:"var(--txt)"}}>"Aggiungi a schermata Home"</strong></span></div>
+                <div style={{display:"flex",gap:8,alignItems:"flex-start"}}><span style={{color:"var(--grn)",fontWeight:700,fontSize:15,flexShrink:0}}>5.</span><span>Conferma toccando <strong style={{color:"var(--txt)"}}>"Installa"</strong></span></div>
+              </div>
+            </div>
+
+            {/* Desktop instructions — always visible */}
+            <div style={{marginBottom:10,padding:12,borderRadius:6,background:"var(--card)",border:`1px solid ${!isIOS&&!isAndroid?"var(--org)40":"var(--brd)"}`}}>
+              <div style={{fontSize:14,fontWeight:700,color:"var(--org)",marginBottom:8}}>🖥 Desktop (Chrome / Edge)</div>
+              <div style={{fontSize:14,color:"var(--txt2)",lineHeight:1.7}}>
+                <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}><span style={{color:"var(--org)",fontWeight:700,fontSize:15,flexShrink:0}}>1.</span><span>Apri l'URL in <strong style={{color:"var(--txt)"}}>Chrome</strong> o <strong style={{color:"var(--txt)"}}>Edge</strong> (Firefox non supporta installazione PWA)</span></div>
+                <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}><span style={{color:"var(--org)",fontWeight:700,fontSize:15,flexShrink:0}}>2.</span><span>Clicca l'icona <strong style={{color:"var(--txt)"}}>installa</strong> 📥 nella barra degli indirizzi (a destra)</span></div>
+                <div style={{display:"flex",gap:8,alignItems:"flex-start"}}><span style={{color:"var(--org)",fontWeight:700,fontSize:15,flexShrink:0}}>3.</span><span>Oppure menu <strong style={{color:"var(--txt)"}}>⋮ → "Installa PM Scanner"</strong> → Conferma</span></div>
+              </div>
+            </div>
+
+            {/* Benefits */}
+            <div style={{padding:10,borderRadius:6,background:"#bf5af208",border:"1px solid #bf5af220"}}>
+              <div style={{fontSize:13,color:"#bf5af2",fontWeight:700,textTransform:"uppercase",letterSpacing:".5px",marginBottom:6}}>Vantaggi app installata</div>
+              <div style={{fontSize:14,color:"var(--txt2)",lineHeight:1.7}}>
+                ✦ Icona nella home come app nativa<br/>
+                ✦ Apertura fullscreen senza barra browser<br/>
+                ✦ Notifiche push anche a schermo spento<br/>
+                ✦ Funziona offline (cache locale)<br/>
+                ✦ Avvio rapido con un tap
+              </div>
+            </div>
+          </>}
+        </div>}
+
+        {/* SCHEDULE PANEL */}
+        {panel==="schedule"&&<div style={PS}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+            <div style={{fontSize:15,fontWeight:700}}>⏱ Scheduler</div>
+            <button onClick={()=>setSchOn(!schOn)} style={TB(schOn)}>{schOn?"● ON":"○ OFF"}</button>
+          </div>
+          <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:8}}>
+            {PRESETS.map(p=><button key={p.m} onClick={()=>{setSchMin(p.m);setCustMin("")}} style={{padding:"8px 14px",borderRadius:4,fontSize:13,fontWeight:600,border:`1px solid ${schMin===p.m&&!custMin?"var(--blu)40":"var(--brd2)"}`,background:schMin===p.m&&!custMin?"#64d2ff15":"var(--card)",color:schMin===p.m&&!custMin?"var(--blu)":"var(--dim3)"}}>{p.l}</button>)}
+          </div>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            <input type="number" min="5" max="10080" value={custMin} placeholder="Custom min" onChange={e=>{setCustMin(e.target.value);if(e.target.value&&parseInt(e.target.value)>=5)setSchMin(parseInt(e.target.value))}} style={{...IS,width:100}}/>
+            <span style={{fontSize:13,color:"var(--dim)"}}>{schMin<60?`${schMin}min`:schMin<1440?`${(schMin/60).toFixed(1)}h`:`${(schMin/1440).toFixed(1)}d`}</span>
+          </div>
+          {schOn&&nextScan&&<div style={{marginTop:8,padding:"6px 10px",borderRadius:4,background:"#34c75910",border:"1px solid #34c75930",fontSize:14,color:"var(--grn)",display:"flex",justifyContent:"space-between"}}><span>Prossima: {ts(nextScan)}</span><span style={{fontFamily:"var(--m)",fontWeight:700}}>{cd}</span></div>}
+        </div>}
+
+        {/* ALERTS PANEL */}
+        {panel==="alerts"&&<div style={PS}>
+          <div style={{fontSize:15,fontWeight:700,marginBottom:10}}>🔔 Alert</div>
+          <div style={{display:"flex",gap:4,marginBottom:10}}>
+            {[["watch","Monitor","var(--blu)"],["alert","Allerta","var(--org)"],["critical","Critici","var(--red)"]].map(([v,l,c])=><button key={v} onClick={()=>setMinSev(v)} style={{padding:"8px 14px",borderRadius:4,fontSize:13,fontWeight:600,border:`1px solid ${minSev===v?c+"50":"var(--brd2)"}`,background:minSev===v?c+"15":"var(--card)",color:minSev===v?c:"var(--dim3)"}}>{l}</button>)}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            {/* Sound */}
+            <div style={{padding:10,borderRadius:6,background:"var(--card)",border:"1px solid var(--brd)"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontSize:14,fontWeight:600}}>🔊 Suono</span><button onClick={()=>setCh(c=>({...c,sound:!c.sound}))} style={TB(ch.sound)}>{ch.sound?"ON":"OFF"}</button></div>
+              {ch.sound&&<button onClick={()=>playSound("critical")} style={{padding:"6px 12px",borderRadius:3,border:"1px solid var(--brd2)",background:"transparent",color:"var(--dim3)",fontSize:8}}>▶ Test</button>}
+            </div>
+            {/* Browser */}
+            <div style={{padding:10,borderRadius:6,background:"var(--card)",border:"1px solid var(--brd)"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontSize:14,fontWeight:600}}>🌐 Push</span><button onClick={async()=>{if(!ch.browser){const p=await reqNotifPerm();setNotifSt(p);if(p==="granted")setCh(c=>({...c,browser:true}))}else setCh(c=>({...c,browser:false}))}} style={TB(ch.browser)}>{ch.browser?"ON":"OFF"}</button></div>
+              <div style={{fontSize:15,color:"var(--dim)"}}>{notifSt==="granted"?"✅ OK":notifSt==="denied"?"❌ Bloccato":"Abilita"}</div>
+            </div>
+            {/* Email */}
+            <div style={{padding:10,borderRadius:6,background:"var(--card)",border:"1px solid var(--brd)",gridColumn:"1/-1"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontSize:14,fontWeight:600}}>📧 EmailJS</span><button onClick={()=>setCh(c=>({...c,email:!c.email}))} style={TB(ch.email)}>{ch.email?"ON":"OFF"}</button></div>
+              {ch.email&&<div style={{display:"flex",flexDirection:"column",gap:5}}>
+                <input placeholder="Email destinatario" type="email" value={emTo} onChange={e=>setEmTo(e.target.value)} style={IS}/>
+                <input placeholder="Public Key" value={ejsPK} onChange={e=>setEjsPK(e.target.value)} style={IS}/>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:5}}>
+                  <input placeholder="Service ID" value={ejsSI} onChange={e=>setEjsSI(e.target.value)} style={IS}/>
+                  <input placeholder="Template ID" value={ejsTI} onChange={e=>setEjsTI(e.target.value)} style={IS}/>
+                </div>
+                <button onClick={async()=>{if(!ejsPK||!ejsSI||!ejsTI||!emTo){alert("Compila tutti i campi");return}const ok=await sendEJS(ejsSI,ejsTI,ejsPK,emTo,[{maxSeverity:"alert",totalWeight:5,market:{question:"Test Alert",slug:"test"},meta:{vol24h:50000,yesPrice:.72},detections:[{icon:"📊",label:"Test",detail:"Verifica email"}]}]);alert(ok?"✅ Email inviata!":"❌ Verifica credenziali")}} style={{padding:"8px 14px",borderRadius:3,border:"1px solid var(--brd2)",background:"transparent",color:"var(--dim3)",fontSize:15,alignSelf:"flex-start"}}>▶ Test Email</button>
+                <div style={{fontSize:15,color:"var(--dim2)",lineHeight:1.5}}>Setup: emailjs.com → Email Services → Gmail → Templates → Campi: {"{{to_email}}"} {"{{subject}}"} {"{{message}}"}</div>
+              </div>}
+            </div>
+            {/* Telegram */}
+            <div style={{padding:10,borderRadius:6,background:"var(--card)",border:"1px solid var(--brd)",gridColumn:"1/-1"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontSize:14,fontWeight:600}}>✈️ Telegram</span><button onClick={()=>setCh(c=>({...c,telegram:!c.telegram}))} style={TB(ch.telegram)}>{ch.telegram?"ON":"OFF"}</button></div>
+              {ch.telegram&&<div style={{display:"flex",flexDirection:"column",gap:5}}>
+                <input placeholder="Bot Token" value={tgTok} onChange={e=>setTgTok(e.target.value)} style={IS}/>
+                <input placeholder="Chat ID" value={tgCid} onChange={e=>setTgCid(e.target.value)} style={IS}/>
+                <button onClick={async()=>{const ok=await sendTG(tgTok,tgCid,"🔍 <b>Test</b> — PM Scanner connesso!");alert(ok?"✅ Inviato!":"❌ Verifica token/chat ID")}} style={{padding:"8px 14px",borderRadius:3,border:"1px solid var(--brd2)",background:"transparent",color:"var(--dim3)",fontSize:15,alignSelf:"flex-start"}}>▶ Test TG</button>
+                <div style={{fontSize:15,color:"var(--dim2)",lineHeight:1.5}}>@BotFather → nuovo bot → copia token. @userinfobot → chat ID</div>
+              </div>}
+            </div>
+          </div>
+          {aLog.length>0&&<div style={{marginTop:8}}><div style={{fontSize:15,color:"var(--dim)",fontWeight:600,textTransform:"uppercase",marginBottom:3}}>Log</div><div style={{maxHeight:80,overflowY:"auto",borderRadius:4,border:"1px solid var(--brd)"}}>{[...aLog].reverse().slice(0,8).map((a,i)=><div key={i} style={{padding:"3px 8px",borderBottom:"1px solid #14141e",fontSize:13,color:"var(--dim3)",display:"flex",justifyContent:"space-between",fontFamily:"var(--m)"}}><span>{ts(a.t)}</span><span>{a.ch==="summary"?`${a.n} sig (${a.c} crit)`:`${a.ch} ${a.ok?"✅":"❌"}`}</span></div>)}</div></div>}
+        </div>}
+
+        {/* CONFIG */}
+        {panel==="config"&&<div style={PS}>
+          <div style={{fontSize:15,fontWeight:700,marginBottom:10}}>⚙ Parametri</div>
+          {/* Text Size */}
+          <div style={{marginBottom:14,padding:10,borderRadius:6,background:"var(--card)",border:"1px solid var(--brd)"}}>
+            <div style={{fontSize:14,fontWeight:700,color:"var(--txt)",marginBottom:6}}>🔤 Dimensione testo</div>
+            <div style={{display:"flex",gap:6,alignItems:"center"}}>
+              {[{l:"S",v:0.85},{l:"M",v:1},{l:"L",v:1.15},{l:"XL",v:1.3}].map(s=><button key={s.l} onClick={()=>setTextScale(s.v)} style={{padding:"10px 18px",borderRadius:8,fontSize:15,fontWeight:700,border:`1px solid ${Math.abs(textScale-s.v)<0.05?"var(--blu)50":"var(--brd2)"}`,background:Math.abs(textScale-s.v)<0.05?"var(--blu)15":"var(--card)",color:Math.abs(textScale-s.v)<0.05?"var(--blu)":"var(--dim3)",minHeight:44}}>{s.l}</button>)}
+              <span style={{fontSize:13,color:"var(--dim)",fontFamily:"var(--m)",marginLeft:6}}>{(textScale*100).toFixed(0)}%</span>
+            </div>
+          </div>
+          {/* Signal Legend */}
+          <div style={{marginBottom:14,padding:10,borderRadius:6,background:"var(--card)",border:"1px solid var(--brd)"}}>
+            <div style={{fontSize:13,color:"var(--blu)",fontWeight:700,textTransform:"uppercase",letterSpacing:".5px",marginBottom:8}}>Legenda Segnali</div>
+            {[
+              ["🆕","Nuova tipologia","Categoria rara di mercato appena creata. I mercati di nicchia sono il veicolo preferito per insider (Google YIS, Axiom).","CRITICO se vol > soglia, altrimenti MONITOR"],
+              ["📊","Picco volume","Volume 24h sproporzionato rispetto allo storico o alla mediana. Pattern chiave nei casi Maduro ($32K→$400K) e Iran ($529M).","CRITICO se 2x la soglia, altrimenti ALLERTA"],
+              ["⚡","Dislocazione prezzo","Movimento rapido di prezzo senza catalizzatore pubblico. Maduro: 7%→100% in ore. Iran: 17%→100%.","CRITICO se swing > 2x soglia"],
+              ["💧","Squilibrio Vol/Liq","Volume pesante su liquidità sottile. Chi ha info urgenti accetta qualsiasi prezzo pur di entrare.","CRITICO se ratio > 2x soglia"],
+              ["📐","Book sbilanciato","Orderbook con forte pressione su un lato (bid o ask). Convinzione direzionale = posizionamento informato.","ALLERTA o MONITOR"],
+              ["🔍","Nicchia attiva","Mercato con poco volume totale che improvvisamente si anima. Axiom reveal: da oscuro a $1M+ in ore.","ALLERTA"],
+              ["🌐","Geo sensibile","Mercato geopolitico vicino a scadenza con volume anomalo. Epicentro scandali: Iran, Maduro, Venezuela.","CRITICO"],
+              ["🎯","Flusso informato","Volume elevato nonostante spread largo. I MM allargano lo spread quando percepiscono adverse selection.","ALLERTA"],
+            ].map(([icon,name,desc,sev],i)=><div key={i} style={{display:"flex",gap:8,marginBottom:6,paddingBottom:6,borderBottom:i<7?"1px solid var(--brd)":"none"}}>
+              <span style={{fontSize:14,flexShrink:0,width:20,textAlign:"center"}}>{icon}</span>
+              <div><div style={{fontSize:14,fontWeight:700,color:"var(--txt)"}}>{name}</div><div style={{fontSize:15,color:"var(--dim3)",lineHeight:1.5}}>{desc}</div><div style={{fontSize:14,color:"var(--org)",marginTop:2}}>Severità: {sev}</div></div>
+            </div>)}
+          </div>
+          <div style={{fontSize:13,color:"var(--dim)",fontWeight:700,textTransform:"uppercase",letterSpacing:".5px",marginBottom:8}}>Soglie di Rilevamento</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            {Object.entries(CFG_M).map(([k,m])=><div key={k} style={{marginBottom:4}}><div style={{fontSize:14,color:"var(--dim)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",display:"flex",justifyContent:"space-between"}}><span>{m.l}</span><span style={{color:"var(--blu)",fontFamily:"var(--m)"}}>{cfg[k]}</span></div><input type="range" min={m.mn} max={m.mx} step={m.s} value={cfg[k]} onChange={e=>setCfg(c=>({...c,[k]:parseFloat(e.target.value)}))} style={{width:"100%"}}/><div style={{fontSize:15,color:"var(--dim2)",lineHeight:1.5,marginTop:2}}>{m.d}</div></div>)}
+          </div>
+          <div style={{textAlign:"right",marginTop:8}}><button onClick={()=>setCfg(DEF_CFG)} style={{padding:"3px 10px",borderRadius:3,border:"1px solid var(--brd)",background:"transparent",color:"var(--dim)",fontSize:9}}>Reset</button></div>
+        </div>}
+
+        {/* HISTORY */}
+        {panel==="history"&&<div style={PS}>
+          <div style={{fontSize:15,fontWeight:700,marginBottom:10}}>📋 Storico</div>
+          {hist.length===0?<div style={{fontSize:14,color:"var(--dim)",textAlign:"center",padding:16}}>Nessuna scansione</div>:
+          <div style={{maxHeight:200,overflowY:"auto"}}>{[...hist].reverse().map((s,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",padding:"4px 0",borderBottom:"1px solid #14141e",fontSize:14,fontFamily:"var(--m)"}}><span style={{color:"var(--txt2)"}}>{ts(s.t)} {ds(s.t)}</span><span style={{padding:"1px 5px",borderRadius:3,fontSize:15,fontWeight:600,background:s.auto?"#34c75918":"#64d2ff18",color:s.auto?"var(--grn)":"var(--blu)"}}>{s.auto?"AUTO":"MAN"}</span><span style={{color:s.critical>0?"var(--red)":"var(--dim)"}}>{s.signals}sig {s.critical}crit</span></div>)}</div>}
+        </div>}
+      </header>
+
+      {/* PROGRESS BAR */}
+      {loading&&<div style={{padding:"0 20px"}}><div style={{height:3,background:"#1a1a28",borderRadius:2,overflow:"hidden"}}><div style={{height:"100%",width:`${progress.p}%`,background:"linear-gradient(90deg,#ff2d55,#ff6b6b)",transition:"width .3s"}}/></div></div>}
+      {error&&<div style={{margin:"8px 20px",padding:"12px 16px",borderRadius:8,background:"#ff2d5515",border:"1px solid #ff2d5540",fontSize:14,color:"#ff6b6b"}}>⚠ {error}</div>}
+
+      {/* STATS */}
+      {stats&&<div style={{padding:"10px 20px",borderBottom:"1px solid var(--brd)",display:"flex",gap:16,fontSize:13,overflowX:"auto"}}>
+        {[["Scan",stats.scanned,"var(--dim3)"],["Segnali",stats.signals,"var(--txt)"],["Crit",stats.critical,"var(--red)"],["Alert",stats.alert,"var(--org)"],["Mon",stats.watch,"var(--blu)"],["Ora",ts(lastScan),"var(--dim)"]].map(([k,v,c],i)=><div key={i} style={{display:"flex",alignItems:"center",gap:5,whiteSpace:"nowrap"}}>{k&&<span style={{color:"var(--dim2)",textTransform:"uppercase",letterSpacing:".4px",fontSize:14,fontWeight:600}}>{k}</span>}<span style={{color:c,fontWeight:700,fontFamily:"var(--m)",fontSize:14}}>{v}</span></div>)}
+      </div>}
+
+      {/* FILTERS */}
+      {signals.length>0&&<div style={{padding:"10px 20px",borderBottom:"1px solid var(--brd)",overflowX:"auto",display:"flex",gap:6}}>
+        {[["all","Tutti",null],["critical","🔴 Crit",null],["alert","🟠 Alert",null],["watch","🔵 Mon",null]].map(([v,l])=><button key={v} onClick={()=>setFSev(v)} style={{padding:"8px 14px",borderRadius:8,fontSize:13,fontWeight:600,border:`1px solid ${fSev===v?"var(--blu)50":"var(--brd)"}`,background:fSev===v?"#64d2ff15":"transparent",color:fSev===v?"var(--blu)":"var(--dim3)",whiteSpace:"nowrap",flexShrink:0}}>{l}</button>)}
+        <span style={{width:1,background:"var(--brd)",margin:"0 4px",flexShrink:0}}/>
+        {[["all","Tutti"],["NEW_TYPE","🆕"],["VOLUME_SURGE","📊"],["PRICE_DISLOCATION","⚡"],["LIQ_IMBALANCE","💧"],["NICHE_HEAT","🔍"],["GEO_SENSITIVE","🌐"],["INFORMED_FLOW","🎯"]].map(([v,l])=>sigC[v]||v==="all"?<button key={v} onClick={()=>setFSig(v)} style={{padding:"8px 12px",borderRadius:8,fontSize:13,fontWeight:500,border:"none",background:fSig===v?"var(--brd2)":"transparent",color:fSig===v?"var(--txt2)":"var(--dim2)",whiteSpace:"nowrap",flexShrink:0}}>{l}</button>:null)}
+      </div>}
+
+      {/* RESULTS */}
+      <div style={{padding:"16px 20px 50px"}}>
+        {!lastScan&&!loading&&<div style={{textAlign:"center",padding:"70px 20px"}}>
+          <div style={{fontSize:40,marginBottom:16,opacity:.15}}>◉</div>
+          <div style={{fontSize:18,fontWeight:600,color:"var(--dim3)",marginBottom:8}}>Pronto per l'analisi</div>
+          <div style={{fontSize:14,color:"var(--dim)",lineHeight:1.7,maxWidth:400,margin:"0 auto"}}>Tocca <strong style={{color:"var(--red)"}}>▶ SCAN</strong> nella barra in basso per avviare la scansione dei mercati Polymarket.</div>
+        </div>}
+        {disp.length>0&&<div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+          <span style={{fontSize:14,color:"var(--dim)"}}>{disp.length} segnali trovati</span>
+          <button onClick={()=>translateAll(disp)} style={{padding:"8px 16px",borderRadius:8,border:"1px solid #64d2ff30",background:"#64d2ff10",color:"var(--blu)",fontSize:13,fontWeight:600,display:"flex",alignItems:"center",gap:6}}>🇮🇹 Traduci tutti</button>
+        </div>}
+        {disp.map((s,i)=><Card key={s.market.id||i} signal={s} rank={i+1} translation={translations[s.market.id]} onTranslate={translateText} isTranslating={translating===s.market.id}/>)}
+        {lastScan&&disp.length===0&&<div style={{textAlign:"center",padding:30,color:"var(--dim)",fontSize:14}}>Nessun segnale con i filtri attuali.</div>}
+      </div>
+
+      {/* ═══ BOTTOM TAB BAR ═══ */}
+      <div className="tab-bar">
+        <button className={`tab-btn${panel===null&&!loading?" active":""}`} onClick={()=>setPanel(null)}>
+          <span className="ti">🏠</span><span className="tl">Home</span>
+        </button>
+        <button className={`tab-btn${panel==="alerts"?" active":""}`} onClick={()=>toggle("alerts")} style={Object.values(ch).some(v=>v)?{color:"var(--org)"}:{}}>
+          <span className="ti">🔔</span><span className="tl">Alert</span>
+        </button>
+        <button className={`tab-btn scan-btn`} onClick={loading?()=>abRef.current?.abort():()=>scan(false)}>
+          <span className="ti">{loading?"■":"▶"}</span><span className="tl">{loading?"STOP":"SCAN"}</span>
+        </button>
+        <button className={`tab-btn${panel==="schedule"?" active":""}`} onClick={()=>toggle("schedule")} style={schOn?{color:"var(--grn)"}:{}}>
+          <span className="ti">⏱</span><span className="tl">Timer</span>
+        </button>
+        <button className={`tab-btn${panel==="config"||panel==="history"||panel==="install"?" active":""}`} onClick={()=>toggle(panel==="config"?"config":panel==="history"?"history":panel==="install"?"install":"config")}>
+          <span className="ti">⚙</span><span className="tl">Menu</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+</script>
+
+<script>
+// Register Service Worker
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>{
+    navigator.serviceWorker.register('./sw.js').then(r=>{
+      console.log('SW registered',r.scope);
+    }).catch(e=>console.log('SW failed',e));
+  });
+}
+
+// PWA Install — floating banner for first-time visitors
+let deferredPrompt;
+const _isStandalone=window.matchMedia('(display-mode:standalone)').matches||window.navigator.standalone===true;
+const _isIOS=(navigator.userAgent||"").indexOf("iPhone")>=0||(navigator.userAgent||"").indexOf("iPad")>=0||(navigator.userAgent||"").indexOf("iPod")>=0;
+
+window.addEventListener('beforeinstallprompt',(e)=>{
+  e.preventDefault();
+  deferredPrompt=e;
+  if(!_isStandalone&&!localStorage.getItem('pm_install_dismissed')){
+    setTimeout(showInstallBanner,4000);
+  }
+});
+
+if(_isIOS&&!_isStandalone&&!localStorage.getItem('pm_install_dismissed')){
+  setTimeout(()=>{
+    const b=document.createElement('div');b.id='install-banner';
+    b.innerHTML=`<div style="position:fixed;bottom:16px;left:16px;right:16px;padding:14px 16px;background:#1a1a28;border:1px solid #252535;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,.6);z-index:1000;font-family:var(--s);animation:fadeIn .3s ease">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div style="font-size:13px;color:#e5e5ee;font-weight:700">📲 Installa PM Scanner</div>
+        <button onclick="dismissInstall()" style="background:none;border:none;color:#505068;font-size:16px;cursor:pointer;padding:4px">✕</button>
+      </div>
+      <div style="font-size:11px;color:#b0b0c0;line-height:1.6">
+        Tocca <strong style="color:#64d2ff">⬆ Condividi</strong> poi <strong style="color:#64d2ff">"Aggiungi a schermata Home"</strong>
+      </div>
+    </div>`;
+    document.body.appendChild(b);
+  },4000);
+}
+
+function showInstallBanner(){
+  if(!deferredPrompt||document.getElementById('install-banner'))return;
+  const b=document.createElement('div');b.id='install-banner';
+  b.innerHTML=`<div style="position:fixed;bottom:16px;left:16px;right:16px;padding:14px 16px;background:#1a1a28;border:1px solid #252535;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,.6);z-index:1000;font-family:var(--s);animation:fadeIn .3s ease">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <div style="font-size:13px;color:#e5e5ee;font-weight:700">📲 Installa PM Scanner</div>
+        <div style="font-size:10px;color:#707088;margin-top:2px">App nativa con notifiche e accesso rapido</div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button onclick="dismissInstall()" style="padding:8px 12px;border-radius:6px;border:1px solid #252535;background:transparent;color:#707088;font-size:11px;cursor:pointer;font-family:var(--s)">Dopo</button>
+        <button onclick="installPWA()" style="padding:8px 16px;border-radius:6px;border:none;background:linear-gradient(135deg,#bf5af2,#8b5cf6);color:#fff;font-size:11px;font-weight:700;cursor:pointer;font-family:var(--s)">Installa</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(b);
+}
+
+function installPWA(){
+  const b=document.getElementById('install-banner');
+  if(b)b.remove();
+  if(deferredPrompt){deferredPrompt.prompt();deferredPrompt.userChoice.then(()=>{deferredPrompt=null})}
+}
+function dismissInstall(){
+  const b=document.getElementById('install-banner');
+  if(b)b.remove();
+  localStorage.setItem('pm_install_dismissed','1');
+}
+</script>
+</body>
+</html>
