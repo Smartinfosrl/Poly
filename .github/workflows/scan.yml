@@ -1,0 +1,41 @@
+name: PM Scanner - Insider Signal Detector
+
+on:
+  schedule:
+    # Gira ogni 4 ore — lo script decide il livello in base all'ora
+    # UTC: 2,6,10,14,18,22 → Italia: 04,08,12,16,20,00
+    #
+    # LOGICA (in scanner.js):
+    #   Ogni 4h  → solo CRITICI
+    #   Ogni 8h  (08:00, 16:00, 00:00 IT) → CRITICI + ALLERTA
+    #   Ogni 24h (08:00 IT) → REPORT COMPLETO + EMAIL
+    #
+    - cron: '0 2,6,10,14,18,22 * * *'
+
+  workflow_dispatch:
+    inputs:
+      alert_level:
+        description: 'Livello: critical / alert / all'
+        required: false
+        default: 'all'
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run Scanner
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RESEND_KEY: ${{ secrets.RESEND_KEY }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          MANUAL_LEVEL: ${{ github.event.inputs.alert_level || '' }}
+        run: node scanner.js
