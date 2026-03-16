@@ -114,6 +114,11 @@ const LS_KEY="pm_scanner_settings";
 const loadSettings=()=>{try{return JSON.parse(localStorage.getItem(LS_KEY))||{}}catch(e){return{}}};
 const saveSettings=(s)=>{try{localStorage.setItem(LS_KEY,JSON.stringify(s))}catch(e){}};
 
+// ─── Signal Archive (persistent) ──────────────────
+const ARCHIVE_KEY="pm_archive";
+const loadArchive=()=>{try{return JSON.parse(localStorage.getItem(ARCHIVE_KEY))||[]}catch(e){return[]}};
+const saveArchive=(a)=>{try{localStorage.setItem(ARCHIVE_KEY,JSON.stringify(a))}catch(e){}};
+
 // ─── Utils ─────────────────────────────────────────
 const fmt=n=>{if(!n&&n!==0)return"$0";if(n>=1e6)return`$${(n/1e6).toFixed(2)}M`;if(n>=1e3)return`$${(n/1e3).toFixed(1)}K`;return`$${Math.round(n)}`};
 const pct=n=>`${(n*100).toFixed(1)}%`;
@@ -318,6 +323,63 @@ function App(){
   const[minSev,setMinSev]=useState(saved.minSev||"alert");
   const[aLog,setALog]=useState([]);
   const[hist,setHist]=useState([]);
+  const[archive,setArchive]=useState(()=>loadArchive());
+
+  // Archive signals after scan
+  const archiveSignals=useCallback((sigs)=>{
+    const now=Date.now();
+    const newEntries=sigs.map(s=>({
+      id:`${s.market.id}_${now}`,
+      marketId:s.market.id,
+      question:s.market.question,
+      slug:s.market.slug,
+      score:s.totalWeight,
+      severity:s.maxSeverity,
+      confidence:s.confidence,
+      vol24h:s.vol24h,
+      yesPrice:s.yesPrice,
+      ageH:s.ageH,
+      signals:s.detections.map(d=>({signal:d.signal,label:d.label,weight:d.weight,detail:d.detail})),
+      scanTime:now,
+      // Outcome tracking
+      outcome:null, // null=pending, "tp"=true positive, "fp"=false positive, "tn"=true negative
+      outcomeNote:"",
+      outcomeTime:null,
+      // Market result
+      resolved:false,
+      resolvedPrice:null,
+    }));
+    // Deduplicate: don't add if same market was archived in last 12h
+    setArchive(prev=>{
+      const merged=[...prev];
+      for(const entry of newEntries){
+        const dup=merged.find(a=>a.marketId===entry.marketId&&(now-a.scanTime)<43200000);
+        if(!dup) merged.push(entry);
+      }
+      const trimmed=merged.slice(-500); // keep last 500
+      saveArchive(trimmed);
+      return trimmed;
+    });
+  },[]);
+
+  // Update outcome for an archived signal
+  const setOutcome=useCallback((id,outcome,note)=>{
+    setArchive(prev=>{
+      const updated=prev.map(a=>a.id===id?{...a,outcome,outcomeNote:note||a.outcomeNote,outcomeTime:Date.now()}:a);
+      saveArchive(updated);
+      return updated;
+    });
+  },[]);
+
+  // Export archive as JSON
+  const exportArchive=useCallback(()=>{
+    const data=JSON.stringify(archive,null,2);
+    const blob=new Blob([data],{type:"application/json"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;a.download=`pm-scanner-archive-${new Date().toISOString().slice(0,10)}.json`;
+    a.click();URL.revokeObjectURL(url);
+  },[archive]);
 
   // ── Translation ──
   const[translations,setTranslations]=useState({});
@@ -477,9 +539,12 @@ function App(){
       const det=analyze(all,prH,cfg);setSignals(det);
       const st={scanned:all.length,signals:det.length,critical:det.filter(s=>s.maxSeverity==="critical").length,alert:det.filter(s=>s.maxSeverity==="alert").length,watch:det.filter(s=>s.maxSeverity==="watch").length};
       setStats(st);const now=new Date();setLastScan(now);setHist(p=>[...p,{t:now,...st,auto}].slice(-100));setProgress({t:"",p:100});
+      // Archive critical + alert signals for tracking
+      const toArchive=det.filter(s=>s.maxSeverity==="critical"||s.maxSeverity==="alert");
+      if(toArchive.length>0) archiveSignals(toArchive);
       if(det.length>0)await fire(det);
     }catch(e){if(e.name!=="AbortError")setError(e.message)}finally{setLoading(false)}
-  },[cfg,loading,fire]);
+  },[cfg,loading,fire,archiveSignals]);
 
   // Scheduler
   useEffect(()=>{if(schRef.current)clearInterval(schRef.current);if(!schOn){setNextScan(null);return}const ms=schMin*6e4;setNextScan(new Date(Date.now()+ms));schRef.current=setInterval(()=>{setNextScan(new Date(Date.now()+ms));scan(true)},ms);return()=>{if(schRef.current)clearInterval(schRef.current)}},[schOn,schMin]);
@@ -667,9 +732,135 @@ function App(){
 
         {/* HISTORY */}
         {panel==="history"&&<div style={PS}>
-          <div style={{fontSize:15,fontWeight:700,marginBottom:10}}>📋 Storico</div>
-          {hist.length===0?<div style={{fontSize:14,color:"var(--dim)",textAlign:"center",padding:16}}>Nessuna scansione</div>:
-          <div style={{maxHeight:200,overflowY:"auto"}}>{[...hist].reverse().map((s,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",padding:"4px 0",borderBottom:"1px solid #14141e",fontSize:14,fontFamily:"var(--m)"}}><span style={{color:"var(--txt2)"}}>{ts(s.t)} {ds(s.t)}</span><span style={{padding:"1px 5px",borderRadius:3,fontSize:15,fontWeight:600,background:s.auto?"#34c75918":"#64d2ff18",color:s.auto?"var(--grn)":"var(--blu)"}}>{s.auto?"AUTO":"MAN"}</span><span style={{color:s.critical>0?"var(--red)":"var(--dim)"}}>{s.signals}sig {s.critical}crit</span></div>)}</div>}
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+            <div style={{fontSize:16,fontWeight:700}}>📋 Storico & Tracking</div>
+            <div style={{display:"flex",gap:6}}>
+              <button onClick={exportArchive} style={{padding:"8px 14px",borderRadius:8,border:"1px solid var(--blu)40",background:"var(--blu)10",color:"var(--blu)",fontSize:13,fontWeight:600}}>📥 Esporta JSON</button>
+            </div>
+          </div>
+
+          {/* Stats riepilogo */}
+          {(()=>{
+            const rated=archive.filter(a=>a.outcome);
+            const tp=archive.filter(a=>a.outcome==="tp").length;
+            const fp=archive.filter(a=>a.outcome==="fp").length;
+            const pending=archive.filter(a=>!a.outcome).length;
+            const accuracy=rated.length>0?((tp/(tp+fp))*100).toFixed(0):"-";
+            const critArchive=archive.filter(a=>a.severity==="critical");
+            const critTP=critArchive.filter(a=>a.outcome==="tp").length;
+            const critFP=critArchive.filter(a=>a.outcome==="fp").length;
+            const critAcc=critTP+critFP>0?((critTP/(critTP+critFP))*100).toFixed(0):"-";
+
+            // Per-signal stats
+            const sigStats={};
+            for(const a of archive){
+              for(const s of a.signals||[]){
+                if(!sigStats[s.signal])sigStats[s.signal]={label:s.label,total:0,tp:0,fp:0,pending:0};
+                sigStats[s.signal].total++;
+                if(a.outcome==="tp")sigStats[s.signal].tp++;
+                else if(a.outcome==="fp")sigStats[s.signal].fp++;
+                else sigStats[s.signal].pending++;
+              }
+            }
+
+            return <div>
+              {/* Summary cards */}
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginBottom:14}}>
+                <div style={{padding:"10px 8px",borderRadius:8,background:"var(--card)",border:"1px solid var(--brd)",textAlign:"center"}}>
+                  <div style={{fontSize:20,fontWeight:700,color:"var(--txt)"}}>{archive.length}</div>
+                  <div style={{fontSize:11,color:"var(--dim3)"}}>Totali</div>
+                </div>
+                <div style={{padding:"10px 8px",borderRadius:8,background:"#34c75910",border:"1px solid #34c75930",textAlign:"center"}}>
+                  <div style={{fontSize:20,fontWeight:700,color:"var(--grn)"}}>{tp}</div>
+                  <div style={{fontSize:11,color:"var(--grn)"}}>✅ Veri</div>
+                </div>
+                <div style={{padding:"10px 8px",borderRadius:8,background:"#ff2d5510",border:"1px solid #ff2d5530",textAlign:"center"}}>
+                  <div style={{fontSize:20,fontWeight:700,color:"var(--red)"}}>{fp}</div>
+                  <div style={{fontSize:11,color:"var(--red)"}}>❌ Falsi</div>
+                </div>
+                <div style={{padding:"10px 8px",borderRadius:8,background:"var(--card)",border:"1px solid var(--brd)",textAlign:"center"}}>
+                  <div style={{fontSize:20,fontWeight:700,color:"var(--org)"}}>{pending}</div>
+                  <div style={{fontSize:11,color:"var(--org)"}}>⏳ Pending</div>
+                </div>
+              </div>
+
+              {/* Accuracy */}
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:14}}>
+                <div style={{padding:"12px 14px",borderRadius:8,background:"var(--card)",border:"1px solid var(--brd)"}}>
+                  <div style={{fontSize:12,color:"var(--dim3)",marginBottom:4}}>ACCURATEZZA TOTALE</div>
+                  <div style={{fontSize:24,fontWeight:700,color:accuracy!=="-"&&parseInt(accuracy)>50?"var(--grn)":"var(--txt)"}}>{accuracy}%</div>
+                  <div style={{fontSize:12,color:"var(--dim)"}}>{tp} veri / {tp+fp} valutati</div>
+                </div>
+                <div style={{padding:"12px 14px",borderRadius:8,background:"var(--card)",border:"1px solid var(--brd)"}}>
+                  <div style={{fontSize:12,color:"var(--dim3)",marginBottom:4}}>ACCURATEZZA CRITICI</div>
+                  <div style={{fontSize:24,fontWeight:700,color:critAcc!=="-"&&parseInt(critAcc)>50?"var(--grn)":"var(--txt)"}}>{critAcc}%</div>
+                  <div style={{fontSize:12,color:"var(--dim)"}}>{critTP} veri / {critTP+critFP} valutati</div>
+                </div>
+              </div>
+
+              {/* Per-signal breakdown */}
+              {Object.keys(sigStats).length>0&&<div style={{marginBottom:14,padding:12,borderRadius:8,background:"var(--card)",border:"1px solid var(--brd)"}}>
+                <div style={{fontSize:13,color:"var(--blu)",fontWeight:700,marginBottom:8}}>ACCURATEZZA PER SEGNALE</div>
+                {Object.entries(sigStats).sort((a,b)=>b[1].total-a[1].total).map(([k,v])=>{
+                  const acc=v.tp+v.fp>0?((v.tp/(v.tp+v.fp))*100).toFixed(0):"-";
+                  return <div key={k} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:"1px solid #14141e",fontSize:13}}>
+                    <span style={{color:"var(--txt2)"}}>{v.label||k}</span>
+                    <div style={{display:"flex",gap:10,alignItems:"center",fontFamily:"var(--m)",fontSize:12}}>
+                      <span style={{color:"var(--grn)"}}>{v.tp}✅</span>
+                      <span style={{color:"var(--red)"}}>{v.fp}❌</span>
+                      <span style={{color:"var(--dim)"}}>{v.pending}⏳</span>
+                      <span style={{color:acc!=="-"&&parseInt(acc)>50?"var(--grn)":"var(--org)",fontWeight:700,minWidth:40,textAlign:"right"}}>{acc}%</span>
+                    </div>
+                  </div>
+                })}
+              </div>}
+            </div>
+          })()}
+
+          {/* Archived signals list */}
+          <div style={{fontSize:14,color:"var(--dim3)",fontWeight:700,marginBottom:8}}>SEGNALI ARCHIVIATI</div>
+          {archive.length===0?<div style={{fontSize:14,color:"var(--dim)",textAlign:"center",padding:20}}>Nessun segnale archiviato. Esegui una scansione per iniziare.</div>:
+          <div style={{maxHeight:400,overflowY:"auto",borderRadius:8,border:"1px solid var(--brd)"}}>
+            {[...archive].reverse().map(a=>{
+              const sevColor=a.severity==="critical"?"var(--red)":a.severity==="alert"?"var(--org)":"var(--blu)";
+              const outIcon=a.outcome==="tp"?"✅":a.outcome==="fp"?"❌":"⏳";
+              const outBg=a.outcome==="tp"?"#34c75908":a.outcome==="fp"?"#ff2d5508":"transparent";
+              return <div key={a.id} style={{padding:"12px 14px",borderBottom:"1px solid #14141e",background:outBg}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:14,fontWeight:600,color:"var(--txt)",lineHeight:1.4}}>{a.question}</div>
+                    <div style={{fontSize:12,color:"var(--dim3)",fontFamily:"var(--m)",marginTop:3}}>
+                      <span style={{color:sevColor,fontWeight:700}}>{a.severity.toUpperCase()}</span> · Score {a.score} · {a.confidence} · {fmt(a.vol24h)} vol · {pct(a.yesPrice)} YES
+                    </div>
+                    <div style={{fontSize:11,color:"var(--dim)",marginTop:2}}>
+                      {new Date(a.scanTime).toLocaleString("it-IT",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})}
+                      {a.signals&&<span> · {a.signals.map(s=>s.signal.split("_")[0]).join(", ")}</span>}
+                    </div>
+                  </div>
+                  <div style={{fontSize:18,marginLeft:8}}>{outIcon}</div>
+                </div>
+                {a.outcomeNote&&<div style={{fontSize:12,color:"var(--dim3)",fontStyle:"italic",marginBottom:6}}>"{a.outcomeNote}"</div>}
+                {/* Outcome buttons */}
+                <div style={{display:"flex",gap:6,marginTop:6}}>
+                  <button onClick={()=>setOutcome(a.id,"tp","")} style={{padding:"8px 14px",borderRadius:8,fontSize:13,fontWeight:600,border:`1px solid ${a.outcome==="tp"?"#34c75960":"var(--brd2)"}`,background:a.outcome==="tp"?"#34c75920":"var(--card)",color:a.outcome==="tp"?"var(--grn)":"var(--dim3)",minHeight:40}}>✅ Vero</button>
+                  <button onClick={()=>setOutcome(a.id,"fp","")} style={{padding:"8px 14px",borderRadius:8,fontSize:13,fontWeight:600,border:`1px solid ${a.outcome==="fp"?"#ff2d5560":"var(--brd2)"}`,background:a.outcome==="fp"?"#ff2d5520":"var(--card)",color:a.outcome==="fp"?"var(--red)":"var(--dim3)",minHeight:40}}>❌ Falso</button>
+                  <button onClick={()=>{const n=prompt("Nota (opzionale):");if(n!==null)setOutcome(a.id,a.outcome||"tp",n)}} style={{padding:"8px 14px",borderRadius:8,fontSize:13,fontWeight:600,border:"1px solid var(--brd2)",background:"var(--card)",color:"var(--dim3)",minHeight:40}}>📝 Nota</button>
+                  <a href={`https://polymarket.com/event/${a.slug}`} target="_blank" rel="noopener" style={{padding:"8px 14px",borderRadius:8,fontSize:13,fontWeight:600,border:"1px solid var(--brd2)",background:"var(--card)",color:"var(--blu)",textDecoration:"none",display:"flex",alignItems:"center",minHeight:40}}>↗</a>
+                </div>
+              </div>
+            })}
+          </div>}
+
+          {/* Clear button */}
+          {archive.length>0&&<div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:12}}>
+            <span style={{fontSize:12,color:"var(--dim)"}}>{archive.length} segnali archiviati</span>
+            <button onClick={()=>{if(confirm("Cancellare tutto l'archivio?")){setArchive([]);saveArchive([])}}} style={{padding:"8px 14px",borderRadius:8,border:"1px solid #ff2d5540",background:"transparent",color:"var(--red)",fontSize:13,fontWeight:600}}>🗑 Svuota</button>
+          </div>}
+
+          {/* Scan history */}
+          <div style={{marginTop:16,fontSize:14,color:"var(--dim3)",fontWeight:700,marginBottom:8}}>STORICO SCANSIONI</div>
+          {hist.length===0?<div style={{fontSize:13,color:"var(--dim)",textAlign:"center",padding:12}}>Nessuna scansione</div>:
+          <div style={{maxHeight:150,overflowY:"auto"}}>{[...hist].reverse().map((s,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #14141e",fontSize:13,fontFamily:"var(--m)"}}><span style={{color:"var(--txt2)"}}>{ts(s.t)} {ds(s.t)}</span><span style={{padding:"2px 8px",borderRadius:4,fontSize:13,fontWeight:600,background:s.auto?"#34c75918":"#64d2ff18",color:s.auto?"var(--grn)":"var(--blu)"}}>{s.auto?"AUTO":"MAN"}</span><span style={{color:s.critical>0?"var(--red)":"var(--dim)"}}>{s.signals}sig {s.critical}crit</span></div>)}</div>}
         </div>}
       </header>
 
@@ -718,7 +909,10 @@ function App(){
         <button className={`tab-btn${panel==="schedule"?" active":""}`} onClick={()=>toggle("schedule")} style={schOn?{color:"var(--grn)"}:{}}>
           <span className="ti">⏱</span><span className="tl">Timer</span>
         </button>
-        <button className={`tab-btn${panel==="config"||panel==="history"||panel==="install"?" active":""}`} onClick={()=>toggle(panel==="config"?"config":panel==="history"?"history":panel==="install"?"install":"config")}>
+        <button className={`tab-btn${panel==="history"?" active":""}`} onClick={()=>toggle("history")}>
+          <span className="ti">📊</span><span className="tl">Storico</span>
+        </button>
+        <button className={`tab-btn${panel==="config"||panel==="install"?" active":""}`} onClick={()=>toggle(panel==="install"?"install":"config")}>
           <span className="ti">⚙</span><span className="tl">Menu</span>
         </button>
       </div>
