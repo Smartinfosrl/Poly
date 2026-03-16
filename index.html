@@ -150,10 +150,28 @@ const IS_ANDROID=UA.indexOf("Android")>=0;
 const IS_STANDALONE=window.matchMedia("(display-mode:standalone)").matches||window.navigator.standalone===true;
 const GEO_RE=new RegExp("politic|geopolit|military|war|conflict|government|election|diplomacy|sanction|regime","i");
 
+// ─── Category Detection ─────────────────────────────
+const CAT_RE={
+  "⚽ Sport": /nba|nfl|nhl|mlb|nascar|mma|ufc|epl|serie.a|bundesliga|ligue|premier.league|champions.league|ncaa|tennis|golf|cricket|wnba|mls|la.liga|football|basketball|baseball|hockey|soccer|boxing|f1|formula/i,
+  "🏛 Politica": /politic|election|president|governor|senat|congress|parliament|vote|democrat|republican|trump|biden|legislation|law|supreme.court|impeach|cabinet|prime.minister/i,
+  "🌍 Geopolitica": /geopolit|military|war|conflict|sanction|regime|nuclear|nato|diplomacy|ceasefire|invasion|troops|missile|iran|russia|china|ukraine|north.korea|israel|hamas|hezbollah/i,
+  "💰 Finanza": /bitcoin|btc|eth|crypto|stock|price|market.cap|sp500|nasdaq|fed|interest.rate|inflation|gdp|recession|ipo|trade|tariff|dollar|euro|gold|oil|commodity/i,
+  "🔬 Scienza & Tech": /ai|artificial.intelligence|openai|google|apple|microsoft|meta|spacex|nasa|launch|fda|drug|vaccine|clinical|research|patent|quantum|chip|semiconductor/i,
+  "🎭 Cultura & Media": /oscar|emmy|grammy|box.office|movie|film|album|spotify|youtube|tiktok|twitter|celebrity|royal|award|entertainment/i,
+  "⚖️ Giustizia": /court|trial|verdict|lawsuit|judge|conviction|indictment|plea|attorney|legal|fbi|doj|sec|investigation/i,
+  "🌦 Clima & Ambiente": /climate|weather|hurricane|earthquake|wildfire|temperature|flood|drought|emission|carbon|renewable|energy/i,
+};
+const ALL_CATS=Object.keys(CAT_RE).concat(["📦 Altro"]);
+function detectCategory(question, tags) {
+  const text = (question + " " + tags.join(" ")).toLowerCase();
+  for (const [cat, re] of Object.entries(CAT_RE)) {
+    if (re.test(text)) return cat;
+  }
+  return "📦 Altro";
+}
+
 // ─── Signal Engine v2 — optimized from backtest ──────
-// Key improvements: sport filter, volume velocity, score multiplier,
-// book skew only on uncertain markets, confidence rating
-const SPORT_RE=new RegExp("nba|nfl|nhl|mlb|nascar|mma|ufc|epl|serie.a|bundesliga|ligue|premier.league|champions.league|ncaa|tennis|golf|cricket|wnba|mls|la.liga|football|basketball|baseball|hockey|soccer|boxing","i");
+// Category-based filtering replaces hardcoded sport filter
 
 function analyze(markets,ph,cfg){
   const sigs=[];
@@ -169,9 +187,9 @@ function analyze(markets,ph,cfg){
     const tags=(m.tags||[]).map(t=>t.label||t.slug||""),sp=m._spread||0,bi=m._bookImbalance||0,prH=ph[m.id]||null;
     const q=(m.question||"").toLowerCase();
 
-    // FILTER: Skip sport markets entirely
-    const isSport=tags.some(t=>SPORT_RE.test(t))||SPORT_RE.test(q);
-    if(isSport)continue;
+    // Detect category and skip excluded ones
+    const category=detectCategory(m.question||"",tags);
+    if(cfg.excludedCats&&cfg.excludedCats.includes(category))continue;
 
     const det=[];
 
@@ -232,7 +250,7 @@ function analyze(markets,ph,cfg){
       const confidence=nSigs>=5&&hasGoldSignal?"ALTA":nSigs>=3&&(hasGoldSignal||hasConcentrated)?"MEDIA":"BASSA";
 
       const ms=det.some(d=>d.severity==="critical")?"critical":det.some(d=>d.severity==="alert")?"alert":"watch";
-      sigs.push({market:m,detections:det,totalWeight:tw,maxSeverity:ms,confidence,meta:{vol,vol24h:v24,liq,yesPrice:yP,ageH:aH,spread:sp,bookImbalance:bi,tags,hoursToExpiry:hE,priceHistory:prH}});
+      sigs.push({market:m,detections:det,totalWeight:tw,maxSeverity:ms,confidence,category,meta:{vol,vol24h:v24,liq,yesPrice:yP,ageH:aH,spread:sp,bookImbalance:bi,tags,hoursToExpiry:hE,priceHistory:prH}});
     }
   }
   return sigs.filter(s=>s.totalWeight>=cfg.minAlertScore).sort((a,b)=>b.totalWeight-a.totalWeight);
@@ -287,7 +305,7 @@ function Card({signal:s,rank:r,translation,onTranslate,isTranslating}){
 }
 
 // ─── Config ────────────────────────────────────────
-const DEF_CFG={rareCategoryMax:3,newTypeMaxAge:72,newTypeMinVol:5000,surgeMinVol:3000,surgeRatio:.2,surgeVsMedian:5,priceSwingMin:.1,volLiqImbalance:4,bookSkewThreshold:.75,nicheMaxTotalVol:50000,nicheMinDailyVol:2000,nicheHeatRatio:.15,geoExpiryHours:72,spreadWide:.06,minAlertScore:10};
+const DEF_CFG={rareCategoryMax:3,newTypeMaxAge:72,newTypeMinVol:5000,surgeMinVol:3000,surgeRatio:.2,surgeVsMedian:5,priceSwingMin:.1,volLiqImbalance:4,bookSkewThreshold:.75,nicheMaxTotalVol:50000,nicheMinDailyVol:2000,nicheHeatRatio:.15,geoExpiryHours:72,spreadWide:.06,minAlertScore:10,excludedCats:["⚽ Sport"]};
 const CFG_M={rareCategoryMax:{l:"Cat. rara max",mn:1,mx:10,s:1,d:"Quanti mercati deve avere una categoria per essere 'rara'. Categorie con pochi mercati = terreno insider (es. Google YIS)."},newTypeMaxAge:{l:"Età nuova tipo (h)",mn:12,mx:336,s:12,d:"Ore dalla creazione per considerare un mercato 'nuovo'. Il mercato Maduro fu creato e sfruttato nelle stesse ore."},surgeMinVol:{l:"Vol min surge $",mn:500,mx:50000,s:500,d:"Volume 24h minimo per segnalare un picco. Caso Maduro: $32K in ore. Caso Iran: $529M totali."},surgeRatio:{l:"Ratio surge",mn:.05,mx:.8,s:.05,d:"Se vol24h supera questa % del volume totale = allarme. 0.20 = 20% dello storico in un giorno."},priceSwingMin:{l:"Swing min prezzo",mn:.03,mx:.5,s:.01,d:"Variazione minima prezzo per segnalare dislocazione. Maduro: da 7% a 100%. 0.10 = 10 punti."},volLiqImbalance:{l:"Vol/Liq ratio",mn:1,mx:20,s:.5,d:"Rapporto volume/liquidità. Alto = acquisto aggressivo su book sottile. Chi sa qualcosa accetta qualsiasi prezzo."},bookSkewThreshold:{l:"Book skew",mn:.3,mx:.95,s:.05,d:"Sbilanciamento orderbook (0-1). 0.6 = 60% del book su un lato. Pressione direzionale = possibile insider."},geoExpiryHours:{l:"Geo finestra (h)",mn:12,mx:336,s:12,d:"Ore alla scadenza per mercati geopolitici. Iran e Maduro avevano scadenze ravvicinate + volumi improvvisi."},spreadWide:{l:"Spread soglia",mn:.02,mx:.2,s:.01,d:"Spread bid-ask min per 'flusso informato'. MM allargano spread quando sentono insider. Volume su spread largo = premium pagato."},minAlertScore:{l:"Score min alert",mn:0,mx:25,s:1,d:"Score minimo per mostrare un segnale. Dal backtest: veri insider = 23-27, falsi positivi = 5-15. Valore 10 = buon compromesso, 15 = solo alta confidenza."}};
 const PRESETS=[{l:"30min",m:30},{l:"1h",m:60},{l:"2h",m:120},{l:"4h",m:240},{l:"8h",m:480},{l:"12h",m:720},{l:"24h",m:1440}];
 
@@ -303,9 +321,11 @@ function App(){
   const[cfg,setCfg]=useState(saved.cfg||DEF_CFG);
   const[fSev,setFSev]=useState("all");
   const[fSig,setFSig]=useState("all");
+  const[fCat,setFCat]=useState("all");
   const[sort,setSort]=useState("weight");
   const abRef=useRef(null);
   const[panel,setPanel]=useState(null);
+  const[sTab,setSTab]=useState("timer"); // settings sub-tab: timer, alerts, params, install
   const[schOn,setSchOn]=useState(false);
   const[schMin,setSchMin]=useState(saved.schMin||60);
   const[custMin,setCustMin]=useState("");
@@ -447,8 +467,10 @@ function App(){
   useEffect(()=>{
     const handler=(e)=>{e.preventDefault();setInstallPrompt(e);if(!isStandalone&&!localStorage.getItem('pm_install_dismissed'))setShowInstall(true)};
     window.addEventListener('beforeinstallprompt',handler);
-    // Show iOS install hint after 3s if not standalone
-    if(isIOS&&!isStandalone&&!localStorage.getItem('pm_install_dismissed')){setTimeout(()=>setShowInstall(true),3000)}
+    // Auto-show install for non-standalone users on first visit
+    if(!isStandalone&&!localStorage.getItem('pm_install_dismissed')){
+      setTimeout(()=>{setShowInstall(true);setPanel("settings");setSTab("install")},1500);
+    }
     return()=>window.removeEventListener('beforeinstallprompt',handler);
   },[]);
 
@@ -549,8 +571,9 @@ function App(){
   // Scheduler
   useEffect(()=>{if(schRef.current)clearInterval(schRef.current);if(!schOn){setNextScan(null);return}const ms=schMin*6e4;setNextScan(new Date(Date.now()+ms));schRef.current=setInterval(()=>{setNextScan(new Date(Date.now()+ms));scan(true)},ms);return()=>{if(schRef.current)clearInterval(schRef.current)}},[schOn,schMin]);
 
-  const disp=useMemo(()=>{let l=signals;if(fSev!=="all")l=l.filter(s=>s.maxSeverity===fSev);if(fSig!=="all")l=l.filter(s=>s.detections.some(d=>d.signal===fSig));if(sort==="weight")l=[...l].sort((a,b)=>b.totalWeight-a.totalWeight);if(sort==="volume")l=[...l].sort((a,b)=>b.meta.vol24h-a.meta.vol24h);if(sort==="newest")l=[...l].sort((a,b)=>a.meta.ageH-b.meta.ageH);return l},[signals,fSev,fSig,sort]);
+  const disp=useMemo(()=>{let l=signals;if(fSev!=="all")l=l.filter(s=>s.maxSeverity===fSev);if(fSig!=="all")l=l.filter(s=>s.detections.some(d=>d.signal===fSig));if(fCat!=="all")l=l.filter(s=>s.category===fCat);if(sort==="weight")l=[...l].sort((a,b)=>b.totalWeight-a.totalWeight);if(sort==="volume")l=[...l].sort((a,b)=>b.meta.vol24h-a.meta.vol24h);if(sort==="newest")l=[...l].sort((a,b)=>a.meta.ageH-b.meta.ageH);return l},[signals,fSev,fSig,fCat,sort]);
   const sigC=useMemo(()=>{const c={};for(const s of signals)for(const d of s.detections)c[d.signal]=(c[d.signal]||0)+1;return c},[signals]);
+  const catC=useMemo(()=>{const c={};for(const s of signals){c[s.category]=(c[s.category]||0)+1}return c},[signals]);
   const toggle=p=>setPanel(v=>v===p?null:p);
 
   const PS={padding:"18px 20px",background:"var(--srf)",borderRadius:12,border:"1px solid var(--brd)",marginTop:12};
@@ -572,162 +595,152 @@ function App(){
           {loading&&<div style={{fontSize:13,color:"var(--org)",fontFamily:"var(--m)",display:"flex",alignItems:"center",gap:6}}><span style={{animation:"pulse2 1.5s ease infinite"}}>●</span>{progress.t}</div>}
         </div>
 
-        {/* INSTALL PANEL */}
-        {panel==="install"&&<div style={PS}>
-          <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>📲 Installa App</div>
 
-          {isStandalone?
-            <div style={{textAlign:"center",padding:16,color:"var(--grn)",fontSize:15,fontWeight:600}}>✅ App già installata!</div>
-          :<>
-            {/* Direct install button (Chrome/Edge) */}
-            {installPrompt&&<div style={{marginBottom:14}}>
-              <button onClick={doInstall} style={{width:"100%",padding:"12px",borderRadius:8,background:"linear-gradient(135deg,#bf5af2,#8b5cf6)",color:"#fff",fontSize:13,fontWeight:700,letterSpacing:".3px",marginBottom:8}}>
-                📱 Installa PM Scanner
-              </button>
-              <div style={{fontSize:14,color:"var(--dim)",textAlign:"center"}}>L'app verrà aggiunta alla home del tuo dispositivo</div>
+        {/* ═══ IMPOSTAZIONI (unified settings) ═══ */}
+        {panel==="settings"&&<div style={PS}>
+          <div style={{fontSize:16,fontWeight:700,marginBottom:12}}>⚙ Impostazioni</div>
+          {/* Sub-tabs */}
+          <div style={{display:"flex",gap:6,marginBottom:14,overflowX:"auto"}}>
+            {[["timer","⏱ Timer",schOn?"var(--grn)":null],["alerts","🔔 Alert",Object.values(ch).some(v=>v)?"var(--org)":null],["params","📐 Parametri",null],["install","📲 Installa",null]].map(([k,l,dot])=><button key={k} onClick={()=>setSTab(k)} style={{padding:"10px 16px",borderRadius:10,fontSize:14,fontWeight:600,border:`1px solid ${sTab===k?"var(--blu)50":"var(--brd)"}`,background:sTab===k?"#64d2ff12":"var(--card)",color:sTab===k?"var(--blu)":"var(--dim3)",whiteSpace:"nowrap",flexShrink:0,display:"flex",alignItems:"center",gap:6,minHeight:44}}>{l}{dot&&<span style={{width:8,height:8,borderRadius:"50%",background:dot,flexShrink:0}}/>}</button>)}
+          </div>
+
+          {/* ─── TIMER ─── */}
+          {sTab==="timer"&&<div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+              <div><div style={{fontSize:15,fontWeight:700}}>Scansione automatica</div><div style={{fontSize:12,color:"var(--dim3)",marginTop:2}}>Scansiona periodicamente in background</div></div>
+              <button onClick={()=>setSchOn(!schOn)} style={TB(schOn)}>{schOn?"● ON":"○ OFF"}</button>
+            </div>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
+              {PRESETS.map(p=><button key={p.m} onClick={()=>{setSchMin(p.m);setCustMin("")}} style={{padding:"10px 16px",borderRadius:8,fontSize:14,fontWeight:600,border:`1px solid ${schMin===p.m&&!custMin?"var(--blu)40":"var(--brd2)"}`,background:schMin===p.m&&!custMin?"#64d2ff15":"var(--card)",color:schMin===p.m&&!custMin?"var(--blu)":"var(--dim3)",minHeight:44}}>{p.l}</button>)}
+            </div>
+            <div style={{display:"flex",gap:8,alignItems:"center"}}>
+              <input type="number" min="5" max="10080" value={custMin} placeholder="Custom min" onChange={e=>{setCustMin(e.target.value);if(e.target.value&&parseInt(e.target.value)>=5)setSchMin(parseInt(e.target.value))}} style={{...IS,width:120}}/>
+              <span style={{fontSize:14,color:"var(--dim)"}}>{schMin<60?`${schMin}min`:schMin<1440?`${(schMin/60).toFixed(1)}h`:`${(schMin/1440).toFixed(1)}d`}</span>
+            </div>
+            {schOn&&nextScan&&<div style={{marginTop:10,padding:"10px 14px",borderRadius:8,background:"#34c75910",border:"1px solid #34c75930",fontSize:14,color:"var(--grn)",display:"flex",justifyContent:"space-between"}}><span>Prossima: {ts(nextScan)}</span><span style={{fontFamily:"var(--m)",fontWeight:700}}>{cd}</span></div>}
+            <div style={{marginTop:10,padding:"10px 14px",borderRadius:8,background:"var(--card)",border:"1px solid var(--brd)",fontSize:13,color:"var(--dim3)",lineHeight:1.6}}>💡 Il timer funziona solo con l'app aperta. Per scansioni a telefono spento, usa <strong style={{color:"var(--txt)"}}>GitHub Actions</strong> (vedi SCANNER_SETUP.md nel repo).</div>
+          </div>}
+
+          {/* ─── ALERTS ─── */}
+          {sTab==="alerts"&&<div>
+            <div style={{fontSize:15,fontWeight:700,marginBottom:4}}>Canali di notifica</div>
+            <div style={{fontSize:12,color:"var(--dim3)",marginBottom:12}}>Scegli come ricevere gli alert quando vengono rilevati segnali</div>
+            <div style={{marginBottom:12}}>
+              <div style={{fontSize:13,color:"var(--dim2)",fontWeight:600,marginBottom:6}}>Soglia minima alert</div>
+              <div style={{display:"flex",gap:6}}>
+                {[["watch","🔵 Monitor","Tutti i segnali","var(--blu)"],["alert","🟠 Allerta","Anomalie da verificare","var(--org)"],["critical","🔴 Critici","Solo insider probabili","var(--red)"]].map(([v,l,sub,c])=><button key={v} onClick={()=>setMinSev(v)} style={{padding:"8px 14px",borderRadius:8,fontSize:13,fontWeight:600,border:`1px solid ${minSev===v?c+"50":"var(--brd2)"}`,background:minSev===v?c+"15":"var(--card)",color:minSev===v?c:"var(--dim3)",flex:1,textAlign:"left"}}><div>{l}</div><div style={{fontSize:10,fontWeight:400,marginTop:2,color:minSev===v?c+"cc":"var(--dim2)"}}>{sub}</div></button>)}
+              </div>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              <div style={{padding:12,borderRadius:8,background:"var(--card)",border:"1px solid var(--brd)"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontSize:14,fontWeight:600}}>🔊 Suono</span><button onClick={()=>setCh(c=>({...c,sound:!c.sound}))} style={TB(ch.sound)}>{ch.sound?"ON":"OFF"}</button></div>
+                {ch.sound&&<button onClick={()=>playSound("critical")} style={{padding:"6px 12px",borderRadius:6,border:"1px solid var(--brd2)",background:"transparent",color:"var(--dim3)",fontSize:13}}>▶ Test</button>}
+              </div>
+              <div style={{padding:12,borderRadius:8,background:"var(--card)",border:"1px solid var(--brd)"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontSize:14,fontWeight:600}}>🌐 Push</span><button onClick={async()=>{if(!ch.browser){const p=await reqNotifPerm();setNotifSt(p);if(p==="granted")setCh(c=>({...c,browser:true}))}else setCh(c=>({...c,browser:false}))}} style={TB(ch.browser)}>{ch.browser?"ON":"OFF"}</button></div>
+                <div style={{fontSize:12,color:"var(--dim)"}}>{notifSt==="granted"?"✅ Permesso OK":notifSt==="denied"?"❌ Bloccato":"Tocca per abilitare"}</div>
+              </div>
+              <div style={{padding:12,borderRadius:8,background:"var(--card)",border:"1px solid var(--brd)",gridColumn:"1/-1"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontSize:14,fontWeight:600}}>📧 EmailJS</span><button onClick={()=>setCh(c=>({...c,email:!c.email}))} style={TB(ch.email)}>{ch.email?"ON":"OFF"}</button></div>
+                {ch.email&&<div style={{display:"flex",flexDirection:"column",gap:6}}>
+                  <input placeholder="Email destinatario" type="email" value={emTo} onChange={e=>setEmTo(e.target.value)} style={IS}/>
+                  <input placeholder="Public Key" value={ejsPK} onChange={e=>setEjsPK(e.target.value)} style={IS}/>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+                    <input placeholder="Service ID" value={ejsSI} onChange={e=>setEjsSI(e.target.value)} style={IS}/>
+                    <input placeholder="Template ID" value={ejsTI} onChange={e=>setEjsTI(e.target.value)} style={IS}/>
+                  </div>
+                  <button onClick={async()=>{if(!ejsPK||!ejsSI||!ejsTI||!emTo){alert("Compila tutti i campi");return}const ok=await sendEJS(ejsSI,ejsTI,ejsPK,emTo,[{maxSeverity:"alert",totalWeight:5,market:{question:"Test Alert",slug:"test"},meta:{vol24h:50000,yesPrice:.72},detections:[{icon:"📊",label:"Test",detail:"Verifica email"}]}]);alert(ok?"✅ Email inviata!":"❌ Verifica credenziali")}} style={{padding:"10px 16px",borderRadius:8,border:"1px solid var(--brd2)",background:"var(--card)",color:"var(--dim3)",fontSize:14,alignSelf:"flex-start",minHeight:44}}>▶ Test Email</button>
+                  <div style={{fontSize:12,color:"var(--dim2)",lineHeight:1.5}}>Setup: emailjs.com → Email Services → Gmail → Templates</div>
+                </div>}
+              </div>
+              <div style={{padding:12,borderRadius:8,background:"var(--card)",border:"1px solid var(--brd)",gridColumn:"1/-1"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontSize:14,fontWeight:600}}>✈️ Telegram</span><button onClick={()=>setCh(c=>({...c,telegram:!c.telegram}))} style={TB(ch.telegram)}>{ch.telegram?"ON":"OFF"}</button></div>
+                {ch.telegram&&<div style={{display:"flex",flexDirection:"column",gap:6}}>
+                  <input placeholder="Bot Token" value={tgTok} onChange={e=>setTgTok(e.target.value)} style={IS}/>
+                  <input placeholder="Chat ID" value={tgCid} onChange={e=>setTgCid(e.target.value)} style={IS}/>
+                  <button onClick={async()=>{const ok=await sendTG(tgTok,tgCid,"🔍 <b>Test</b> — PM Scanner connesso!");alert(ok?"✅ Inviato!":"❌ Verifica token/chat ID")}} style={{padding:"10px 16px",borderRadius:8,border:"1px solid var(--brd2)",background:"var(--card)",color:"var(--dim3)",fontSize:14,alignSelf:"flex-start",minHeight:44}}>▶ Test TG</button>
+                  <div style={{fontSize:12,color:"var(--dim2)",lineHeight:1.5}}>@BotFather → nuovo bot → copia token. Per canali: usa Chat ID negativo.</div>
+                </div>}
+              </div>
+            </div>
+            {aLog.length>0&&<div style={{marginTop:10}}><div style={{fontSize:13,color:"var(--dim)",fontWeight:600,marginBottom:4}}>Log alert recenti</div><div style={{maxHeight:100,overflowY:"auto",borderRadius:6,border:"1px solid var(--brd)"}}>
+              {[...aLog].reverse().slice(0,8).map((a,i)=><div key={i} style={{padding:"6px 10px",borderBottom:"1px solid #14141e",fontSize:13,color:"var(--dim3)",display:"flex",justifyContent:"space-between",fontFamily:"var(--m)"}}><span>{ts(a.t)}</span><span>{a.ch==="summary"?`${a.n} sig (${a.c} crit)`:`${a.ch} ${a.ok?"✅":"❌"}`}</span></div>)}
+            </div></div>}
+          </div>}
+
+          {/* ─── PARAMETRI ─── */}
+          {sTab==="params"&&<div>
+            {/* Category filters for scan */}
+            <div style={{marginBottom:14,padding:12,borderRadius:8,background:"var(--card)",border:"1px solid var(--brd)"}}>
+              <div style={{fontSize:14,fontWeight:700,color:"var(--txt)",marginBottom:4}}>🏷 Categorie da scansionare</div>
+              <div style={{fontSize:12,color:"var(--dim3)",marginBottom:10}}>Deseleziona le categorie che non ti interessano. Verranno escluse dalla scansione.</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                {ALL_CATS.map(cat=>{
+                  const excluded=(cfg.excludedCats||[]).includes(cat);
+                  return <button key={cat} onClick={()=>{
+                    setCfg(c=>{
+                      const ex=c.excludedCats||[];
+                      return {...c,excludedCats:excluded?ex.filter(x=>x!==cat):[...ex,cat]};
+                    });
+                  }} style={{padding:"8px 14px",borderRadius:8,fontSize:13,fontWeight:600,border:`1px solid ${excluded?"#ff2d5530":"#34c75930"}`,background:excluded?"#ff2d5510":"#34c75910",color:excluded?"var(--red)":"var(--grn)",minHeight:40,display:"flex",alignItems:"center",gap:6}}>
+                    <span style={{fontSize:14}}>{excluded?"✗":"✓"}</span>{cat}
+                  </button>
+                })}
+              </div>
+              {(cfg.excludedCats||[]).length>0&&<div style={{fontSize:12,color:"var(--dim)",marginTop:8}}>🚫 Escluse: {(cfg.excludedCats||[]).join(", ")}</div>}
+            </div>
+            <div style={{marginBottom:14,padding:12,borderRadius:8,background:"var(--card)",border:"1px solid var(--brd)"}}>
+              <div style={{fontSize:14,fontWeight:700,color:"var(--txt)",marginBottom:8}}>🔤 Dimensione testo</div>
+              <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                {[{l:"S",v:0.85},{l:"M",v:1},{l:"L",v:1.15},{l:"XL",v:1.3}].map(s=><button key={s.l} onClick={()=>setTextScale(s.v)} style={{padding:"10px 18px",borderRadius:8,fontSize:15,fontWeight:700,border:`1px solid ${Math.abs(textScale-s.v)<0.05?"var(--blu)50":"var(--brd2)"}`,background:Math.abs(textScale-s.v)<0.05?"var(--blu)15":"var(--card)",color:Math.abs(textScale-s.v)<0.05?"var(--blu)":"var(--dim3)",minHeight:44}}>{s.l}</button>)}
+                <span style={{fontSize:13,color:"var(--dim)",fontFamily:"var(--m)",marginLeft:6}}>{(textScale*100).toFixed(0)}%</span>
+              </div>
+            </div>
+            <div style={{marginBottom:14,padding:12,borderRadius:8,background:"var(--card)",border:"1px solid var(--brd)"}}>
+              <div style={{fontSize:13,color:"var(--blu)",fontWeight:700,textTransform:"uppercase",letterSpacing:".5px",marginBottom:8}}>Legenda Segnali</div>
+              {[
+                ["🆕","Nuova tipologia","Categoria rara appena creata — veicolo preferito insider","CRITICO se vol > soglia"],
+                ["📊","Picco volume","Volume 24h sproporzionato vs storico/mediana","CRITICO se 2x soglia"],
+                ["⚡","Dislocazione prezzo","Movimento rapido senza catalizzatore pubblico","CRITICO se swing > 2x"],
+                ["💧","Squilibrio Vol/Liq","Volume pesante su liquidità sottile","CRITICO se ratio > 2x"],
+                ["📐","Book sbilanciato","Pressione direzionale nell'orderbook","ALLERTA o MONITOR"],
+                ["🔍","Nicchia attiva","Mercato oscuro improvvisamente attivo","ALLERTA"],
+                ["🌐","Geo sensibile","Geopolitico vicino a scadenza + volume anomalo","CRITICO"],
+                ["🎯","Flusso informato","Volume alto nonostante spread largo","ALLERTA"],
+              ].map(([icon,name,desc,sev],i)=><div key={i} style={{display:"flex",gap:8,marginBottom:6,paddingBottom:6,borderBottom:i<7?"1px solid var(--brd)":"none"}}>
+                <span style={{fontSize:14,flexShrink:0,width:22,textAlign:"center"}}>{icon}</span>
+                <div><div style={{fontSize:14,fontWeight:700,color:"var(--txt)"}}>{name}</div><div style={{fontSize:13,color:"var(--dim3)",lineHeight:1.4}}>{desc}</div><div style={{fontSize:12,color:"var(--org)",marginTop:2}}>{sev}</div></div>
+              </div>)}
+            </div>
+            <div style={{fontSize:13,color:"var(--dim)",fontWeight:700,textTransform:"uppercase",letterSpacing:".5px",marginBottom:8}}>Soglie di Rilevamento</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr",gap:10}}>
+              {Object.entries(CFG_M).map(([k,m])=><div key={k} style={{padding:10,borderRadius:8,background:"var(--card)",border:"1px solid var(--brd)"}}><div style={{fontSize:14,color:"var(--dim3)",fontWeight:600,display:"flex",justifyContent:"space-between",marginBottom:4}}><span>{m.l}</span><span style={{color:"var(--blu)",fontFamily:"var(--m)",fontWeight:700}}>{cfg[k]}</span></div><input type="range" min={m.mn} max={m.mx} step={m.s} value={cfg[k]} onChange={e=>setCfg(c=>({...c,[k]:parseFloat(e.target.value)}))} style={{width:"100%"}}/><div style={{fontSize:12,color:"var(--dim2)",lineHeight:1.5,marginTop:4}}>{m.d}</div></div>)}
+            </div>
+            <div style={{textAlign:"right",marginTop:10}}><button onClick={()=>setCfg(DEF_CFG)} style={{padding:"8px 16px",borderRadius:8,border:"1px solid var(--brd)",background:"transparent",color:"var(--dim)",fontSize:13}}>↺ Reset default</button></div>
+          </div>}
+
+          {/* ─── INSTALL ─── */}
+          {sTab==="install"&&<div>
+            {isStandalone?
+              <div style={{textAlign:"center",padding:20,color:"var(--grn)",fontSize:16,fontWeight:600}}>✅ App già installata!</div>
+            :<div>
+              {installPrompt&&<div style={{marginBottom:14}}>
+                <button onClick={doInstall} style={{width:"100%",padding:"14px",borderRadius:10,background:"linear-gradient(135deg,#bf5af2,#8b5cf6)",color:"#fff",fontSize:15,fontWeight:700,marginBottom:8,minHeight:48}}>📱 Installa PM Scanner</button>
+              </div>}
+              <div style={{marginBottom:10,padding:14,borderRadius:8,background:"var(--card)",border:"1px solid var(--brd)"}}>
+                <div style={{fontSize:14,fontWeight:700,color:"var(--blu)",marginBottom:8}}>🍎 iPhone/iPad (Safari)</div>
+                <div style={{fontSize:13,color:"var(--txt2)",lineHeight:1.7}}>1. Apri in Safari → 2. Tocca ⬆ Condividi → 3. "Aggiungi a schermata Home" → 4. "Aggiungi"</div>
+              </div>
+              <div style={{marginBottom:10,padding:14,borderRadius:8,background:"var(--card)",border:"1px solid var(--brd)"}}>
+                <div style={{fontSize:14,fontWeight:700,color:"var(--grn)",marginBottom:8}}>🤖 Android (Chrome)</div>
+                <div style={{fontSize:13,color:"var(--txt2)",lineHeight:1.7}}>1. Apri in Chrome → 2. Tocca banner "Installa" → oppure menu ⋮ → "Installa app"</div>
+              </div>
+              <div style={{padding:14,borderRadius:8,background:"var(--card)",border:"1px solid var(--brd)"}}>
+                <div style={{fontSize:14,fontWeight:700,color:"var(--org)",marginBottom:8}}>🖥 Desktop (Chrome/Edge)</div>
+                <div style={{fontSize:13,color:"var(--txt2)",lineHeight:1.7}}>1. Apri in Chrome → 2. Icona 📥 nella barra indirizzi → 3. "Installa"</div>
+              </div>
             </div>}
-
-            {/* iOS instructions — always visible */}
-            <div style={{marginBottom:10,padding:12,borderRadius:6,background:"var(--card)",border:`1px solid ${isIOS?"var(--blu)40":"var(--brd)"}`}}>
-              <div style={{fontSize:14,fontWeight:700,color:"var(--blu)",marginBottom:8}}>🍎 iPhone / iPad (Safari)</div>
-              <div style={{fontSize:14,color:"var(--txt2)",lineHeight:1.7}}>
-                <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"flex-start"}}><span style={{color:"var(--blu)",fontWeight:700,fontSize:15,flexShrink:0}}>1.</span><span>Apri l'URL dell'app in <strong style={{color:"var(--txt)"}}>Safari</strong> (obbligatorio — Chrome e Firefox su iOS non supportano PWA)</span></div>
-                <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"flex-start"}}><span style={{color:"var(--blu)",fontWeight:700,fontSize:15,flexShrink:0}}>2.</span><span>Tocca l'icona <strong style={{color:"var(--txt)"}}>Condividi</strong> <span style={{fontSize:16}}>⬆</span> (rettangolo con freccia in su) nella barra in basso</span></div>
-                <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"flex-start"}}><span style={{color:"var(--blu)",fontWeight:700,fontSize:15,flexShrink:0}}>3.</span><span>Scorri in basso e tocca <strong style={{color:"var(--txt)"}}>"Aggiungi a schermata Home"</strong> <span style={{fontSize:14}}>➕</span></span></div>
-                <div style={{display:"flex",gap:8,alignItems:"flex-start"}}><span style={{color:"var(--blu)",fontWeight:700,fontSize:15,flexShrink:0}}>4.</span><span>Tocca <strong style={{color:"var(--txt)"}}>"Aggiungi"</strong> in alto a destra — l'icona PM Scanner apparirà nella home</span></div>
-              </div>
-            </div>
-
-            {/* Android instructions — always visible */}
-            <div style={{marginBottom:10,padding:12,borderRadius:6,background:"var(--card)",border:`1px solid ${isAndroid?"var(--grn)40":"var(--brd)"}`}}>
-              <div style={{fontSize:14,fontWeight:700,color:"var(--grn)",marginBottom:8}}>🤖 Android (Chrome)</div>
-              <div style={{fontSize:14,color:"var(--txt2)",lineHeight:1.7}}>
-                <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}><span style={{color:"var(--grn)",fontWeight:700,fontSize:15,flexShrink:0}}>1.</span><span>Apri l'URL dell'app in <strong style={{color:"var(--txt)"}}>Chrome</strong></span></div>
-                <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}><span style={{color:"var(--grn)",fontWeight:700,fontSize:15,flexShrink:0}}>2.</span><span>Apparirà un banner in basso <strong style={{color:"var(--txt)"}}>"Installa PM Scanner"</strong> — toccalo</span></div>
-                <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}><span style={{color:"var(--grn)",fontWeight:700,fontSize:15,flexShrink:0}}>3.</span><span>Se non appare: tocca il menu <strong style={{color:"var(--txt)"}}>⋮</strong> (tre puntini) in alto a destra</span></div>
-                <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}><span style={{color:"var(--grn)",fontWeight:700,fontSize:15,flexShrink:0}}>4.</span><span>Seleziona <strong style={{color:"var(--txt)"}}>"Installa app"</strong> o <strong style={{color:"var(--txt)"}}>"Aggiungi a schermata Home"</strong></span></div>
-                <div style={{display:"flex",gap:8,alignItems:"flex-start"}}><span style={{color:"var(--grn)",fontWeight:700,fontSize:15,flexShrink:0}}>5.</span><span>Conferma toccando <strong style={{color:"var(--txt)"}}>"Installa"</strong></span></div>
-              </div>
-            </div>
-
-            {/* Desktop instructions — always visible */}
-            <div style={{marginBottom:10,padding:12,borderRadius:6,background:"var(--card)",border:`1px solid ${!isIOS&&!isAndroid?"var(--org)40":"var(--brd)"}`}}>
-              <div style={{fontSize:14,fontWeight:700,color:"var(--org)",marginBottom:8}}>🖥 Desktop (Chrome / Edge)</div>
-              <div style={{fontSize:14,color:"var(--txt2)",lineHeight:1.7}}>
-                <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}><span style={{color:"var(--org)",fontWeight:700,fontSize:15,flexShrink:0}}>1.</span><span>Apri l'URL in <strong style={{color:"var(--txt)"}}>Chrome</strong> o <strong style={{color:"var(--txt)"}}>Edge</strong> (Firefox non supporta installazione PWA)</span></div>
-                <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}><span style={{color:"var(--org)",fontWeight:700,fontSize:15,flexShrink:0}}>2.</span><span>Clicca l'icona <strong style={{color:"var(--txt)"}}>installa</strong> 📥 nella barra degli indirizzi (a destra)</span></div>
-                <div style={{display:"flex",gap:8,alignItems:"flex-start"}}><span style={{color:"var(--org)",fontWeight:700,fontSize:15,flexShrink:0}}>3.</span><span>Oppure menu <strong style={{color:"var(--txt)"}}>⋮ → "Installa PM Scanner"</strong> → Conferma</span></div>
-              </div>
-            </div>
-
-            {/* Benefits */}
-            <div style={{padding:10,borderRadius:6,background:"#bf5af208",border:"1px solid #bf5af220"}}>
-              <div style={{fontSize:13,color:"#bf5af2",fontWeight:700,textTransform:"uppercase",letterSpacing:".5px",marginBottom:6}}>Vantaggi app installata</div>
-              <div style={{fontSize:14,color:"var(--txt2)",lineHeight:1.7}}>
-                ✦ Icona nella home come app nativa<br/>
-                ✦ Apertura fullscreen senza barra browser<br/>
-                ✦ Notifiche push anche a schermo spento<br/>
-                ✦ Funziona offline (cache locale)<br/>
-                ✦ Avvio rapido con un tap
-              </div>
-            </div>
-          </>}
-        </div>}
-
-        {/* SCHEDULE PANEL */}
-        {panel==="schedule"&&<div style={PS}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-            <div style={{fontSize:15,fontWeight:700}}>⏱ Scheduler</div>
-            <button onClick={()=>setSchOn(!schOn)} style={TB(schOn)}>{schOn?"● ON":"○ OFF"}</button>
-          </div>
-          <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:8}}>
-            {PRESETS.map(p=><button key={p.m} onClick={()=>{setSchMin(p.m);setCustMin("")}} style={{padding:"8px 14px",borderRadius:4,fontSize:13,fontWeight:600,border:`1px solid ${schMin===p.m&&!custMin?"var(--blu)40":"var(--brd2)"}`,background:schMin===p.m&&!custMin?"#64d2ff15":"var(--card)",color:schMin===p.m&&!custMin?"var(--blu)":"var(--dim3)"}}>{p.l}</button>)}
-          </div>
-          <div style={{display:"flex",gap:6,alignItems:"center"}}>
-            <input type="number" min="5" max="10080" value={custMin} placeholder="Custom min" onChange={e=>{setCustMin(e.target.value);if(e.target.value&&parseInt(e.target.value)>=5)setSchMin(parseInt(e.target.value))}} style={{...IS,width:100}}/>
-            <span style={{fontSize:13,color:"var(--dim)"}}>{schMin<60?`${schMin}min`:schMin<1440?`${(schMin/60).toFixed(1)}h`:`${(schMin/1440).toFixed(1)}d`}</span>
-          </div>
-          {schOn&&nextScan&&<div style={{marginTop:8,padding:"6px 10px",borderRadius:4,background:"#34c75910",border:"1px solid #34c75930",fontSize:14,color:"var(--grn)",display:"flex",justifyContent:"space-between"}}><span>Prossima: {ts(nextScan)}</span><span style={{fontFamily:"var(--m)",fontWeight:700}}>{cd}</span></div>}
-        </div>}
-
-        {/* ALERTS PANEL */}
-        {panel==="alerts"&&<div style={PS}>
-          <div style={{fontSize:15,fontWeight:700,marginBottom:10}}>🔔 Alert</div>
-          <div style={{display:"flex",gap:4,marginBottom:10}}>
-            {[["watch","Monitor","var(--blu)"],["alert","Allerta","var(--org)"],["critical","Critici","var(--red)"]].map(([v,l,c])=><button key={v} onClick={()=>setMinSev(v)} style={{padding:"8px 14px",borderRadius:4,fontSize:13,fontWeight:600,border:`1px solid ${minSev===v?c+"50":"var(--brd2)"}`,background:minSev===v?c+"15":"var(--card)",color:minSev===v?c:"var(--dim3)"}}>{l}</button>)}
-          </div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-            {/* Sound */}
-            <div style={{padding:10,borderRadius:6,background:"var(--card)",border:"1px solid var(--brd)"}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontSize:14,fontWeight:600}}>🔊 Suono</span><button onClick={()=>setCh(c=>({...c,sound:!c.sound}))} style={TB(ch.sound)}>{ch.sound?"ON":"OFF"}</button></div>
-              {ch.sound&&<button onClick={()=>playSound("critical")} style={{padding:"6px 12px",borderRadius:3,border:"1px solid var(--brd2)",background:"transparent",color:"var(--dim3)",fontSize:8}}>▶ Test</button>}
-            </div>
-            {/* Browser */}
-            <div style={{padding:10,borderRadius:6,background:"var(--card)",border:"1px solid var(--brd)"}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontSize:14,fontWeight:600}}>🌐 Push</span><button onClick={async()=>{if(!ch.browser){const p=await reqNotifPerm();setNotifSt(p);if(p==="granted")setCh(c=>({...c,browser:true}))}else setCh(c=>({...c,browser:false}))}} style={TB(ch.browser)}>{ch.browser?"ON":"OFF"}</button></div>
-              <div style={{fontSize:15,color:"var(--dim)"}}>{notifSt==="granted"?"✅ OK":notifSt==="denied"?"❌ Bloccato":"Abilita"}</div>
-            </div>
-            {/* Email */}
-            <div style={{padding:10,borderRadius:6,background:"var(--card)",border:"1px solid var(--brd)",gridColumn:"1/-1"}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontSize:14,fontWeight:600}}>📧 EmailJS</span><button onClick={()=>setCh(c=>({...c,email:!c.email}))} style={TB(ch.email)}>{ch.email?"ON":"OFF"}</button></div>
-              {ch.email&&<div style={{display:"flex",flexDirection:"column",gap:5}}>
-                <input placeholder="Email destinatario" type="email" value={emTo} onChange={e=>setEmTo(e.target.value)} style={IS}/>
-                <input placeholder="Public Key" value={ejsPK} onChange={e=>setEjsPK(e.target.value)} style={IS}/>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:5}}>
-                  <input placeholder="Service ID" value={ejsSI} onChange={e=>setEjsSI(e.target.value)} style={IS}/>
-                  <input placeholder="Template ID" value={ejsTI} onChange={e=>setEjsTI(e.target.value)} style={IS}/>
-                </div>
-                <button onClick={async()=>{if(!ejsPK||!ejsSI||!ejsTI||!emTo){alert("Compila tutti i campi");return}const ok=await sendEJS(ejsSI,ejsTI,ejsPK,emTo,[{maxSeverity:"alert",totalWeight:5,market:{question:"Test Alert",slug:"test"},meta:{vol24h:50000,yesPrice:.72},detections:[{icon:"📊",label:"Test",detail:"Verifica email"}]}]);alert(ok?"✅ Email inviata!":"❌ Verifica credenziali")}} style={{padding:"8px 14px",borderRadius:3,border:"1px solid var(--brd2)",background:"transparent",color:"var(--dim3)",fontSize:15,alignSelf:"flex-start"}}>▶ Test Email</button>
-                <div style={{fontSize:15,color:"var(--dim2)",lineHeight:1.5}}>Setup: emailjs.com → Email Services → Gmail → Templates → Campi: {"{{to_email}}"} {"{{subject}}"} {"{{message}}"}</div>
-              </div>}
-            </div>
-            {/* Telegram */}
-            <div style={{padding:10,borderRadius:6,background:"var(--card)",border:"1px solid var(--brd)",gridColumn:"1/-1"}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontSize:14,fontWeight:600}}>✈️ Telegram</span><button onClick={()=>setCh(c=>({...c,telegram:!c.telegram}))} style={TB(ch.telegram)}>{ch.telegram?"ON":"OFF"}</button></div>
-              {ch.telegram&&<div style={{display:"flex",flexDirection:"column",gap:5}}>
-                <input placeholder="Bot Token" value={tgTok} onChange={e=>setTgTok(e.target.value)} style={IS}/>
-                <input placeholder="Chat ID" value={tgCid} onChange={e=>setTgCid(e.target.value)} style={IS}/>
-                <button onClick={async()=>{const ok=await sendTG(tgTok,tgCid,"🔍 <b>Test</b> — PM Scanner connesso!");alert(ok?"✅ Inviato!":"❌ Verifica token/chat ID")}} style={{padding:"8px 14px",borderRadius:3,border:"1px solid var(--brd2)",background:"transparent",color:"var(--dim3)",fontSize:15,alignSelf:"flex-start"}}>▶ Test TG</button>
-                <div style={{fontSize:15,color:"var(--dim2)",lineHeight:1.5}}>@BotFather → nuovo bot → copia token. @userinfobot → chat ID</div>
-              </div>}
-            </div>
-          </div>
-          {aLog.length>0&&<div style={{marginTop:8}}><div style={{fontSize:15,color:"var(--dim)",fontWeight:600,textTransform:"uppercase",marginBottom:3}}>Log</div><div style={{maxHeight:80,overflowY:"auto",borderRadius:4,border:"1px solid var(--brd)"}}>{[...aLog].reverse().slice(0,8).map((a,i)=><div key={i} style={{padding:"3px 8px",borderBottom:"1px solid #14141e",fontSize:13,color:"var(--dim3)",display:"flex",justifyContent:"space-between",fontFamily:"var(--m)"}}><span>{ts(a.t)}</span><span>{a.ch==="summary"?`${a.n} sig (${a.c} crit)`:`${a.ch} ${a.ok?"✅":"❌"}`}</span></div>)}</div></div>}
-        </div>}
-
-        {/* CONFIG */}
-        {panel==="config"&&<div style={PS}>
-          <div style={{fontSize:15,fontWeight:700,marginBottom:10}}>⚙ Parametri</div>
-          {/* Text Size */}
-          <div style={{marginBottom:14,padding:10,borderRadius:6,background:"var(--card)",border:"1px solid var(--brd)"}}>
-            <div style={{fontSize:14,fontWeight:700,color:"var(--txt)",marginBottom:6}}>🔤 Dimensione testo</div>
-            <div style={{display:"flex",gap:6,alignItems:"center"}}>
-              {[{l:"S",v:0.85},{l:"M",v:1},{l:"L",v:1.15},{l:"XL",v:1.3}].map(s=><button key={s.l} onClick={()=>setTextScale(s.v)} style={{padding:"10px 18px",borderRadius:8,fontSize:15,fontWeight:700,border:`1px solid ${Math.abs(textScale-s.v)<0.05?"var(--blu)50":"var(--brd2)"}`,background:Math.abs(textScale-s.v)<0.05?"var(--blu)15":"var(--card)",color:Math.abs(textScale-s.v)<0.05?"var(--blu)":"var(--dim3)",minHeight:44}}>{s.l}</button>)}
-              <span style={{fontSize:13,color:"var(--dim)",fontFamily:"var(--m)",marginLeft:6}}>{(textScale*100).toFixed(0)}%</span>
-            </div>
-          </div>
-          {/* Signal Legend */}
-          <div style={{marginBottom:14,padding:10,borderRadius:6,background:"var(--card)",border:"1px solid var(--brd)"}}>
-            <div style={{fontSize:13,color:"var(--blu)",fontWeight:700,textTransform:"uppercase",letterSpacing:".5px",marginBottom:8}}>Legenda Segnali</div>
-            {[
-              ["🆕","Nuova tipologia","Categoria rara di mercato appena creata. I mercati di nicchia sono il veicolo preferito per insider (Google YIS, Axiom).","CRITICO se vol > soglia, altrimenti MONITOR"],
-              ["📊","Picco volume","Volume 24h sproporzionato rispetto allo storico o alla mediana. Pattern chiave nei casi Maduro ($32K→$400K) e Iran ($529M).","CRITICO se 2x la soglia, altrimenti ALLERTA"],
-              ["⚡","Dislocazione prezzo","Movimento rapido di prezzo senza catalizzatore pubblico. Maduro: 7%→100% in ore. Iran: 17%→100%.","CRITICO se swing > 2x soglia"],
-              ["💧","Squilibrio Vol/Liq","Volume pesante su liquidità sottile. Chi ha info urgenti accetta qualsiasi prezzo pur di entrare.","CRITICO se ratio > 2x soglia"],
-              ["📐","Book sbilanciato","Orderbook con forte pressione su un lato (bid o ask). Convinzione direzionale = posizionamento informato.","ALLERTA o MONITOR"],
-              ["🔍","Nicchia attiva","Mercato con poco volume totale che improvvisamente si anima. Axiom reveal: da oscuro a $1M+ in ore.","ALLERTA"],
-              ["🌐","Geo sensibile","Mercato geopolitico vicino a scadenza con volume anomalo. Epicentro scandali: Iran, Maduro, Venezuela.","CRITICO"],
-              ["🎯","Flusso informato","Volume elevato nonostante spread largo. I MM allargano lo spread quando percepiscono adverse selection.","ALLERTA"],
-            ].map(([icon,name,desc,sev],i)=><div key={i} style={{display:"flex",gap:8,marginBottom:6,paddingBottom:6,borderBottom:i<7?"1px solid var(--brd)":"none"}}>
-              <span style={{fontSize:14,flexShrink:0,width:20,textAlign:"center"}}>{icon}</span>
-              <div><div style={{fontSize:14,fontWeight:700,color:"var(--txt)"}}>{name}</div><div style={{fontSize:15,color:"var(--dim3)",lineHeight:1.5}}>{desc}</div><div style={{fontSize:14,color:"var(--org)",marginTop:2}}>Severità: {sev}</div></div>
-            </div>)}
-          </div>
-          <div style={{fontSize:13,color:"var(--dim)",fontWeight:700,textTransform:"uppercase",letterSpacing:".5px",marginBottom:8}}>Soglie di Rilevamento</div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-            {Object.entries(CFG_M).map(([k,m])=><div key={k} style={{marginBottom:4}}><div style={{fontSize:14,color:"var(--dim)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",display:"flex",justifyContent:"space-between"}}><span>{m.l}</span><span style={{color:"var(--blu)",fontFamily:"var(--m)"}}>{cfg[k]}</span></div><input type="range" min={m.mn} max={m.mx} step={m.s} value={cfg[k]} onChange={e=>setCfg(c=>({...c,[k]:parseFloat(e.target.value)}))} style={{width:"100%"}}/><div style={{fontSize:15,color:"var(--dim2)",lineHeight:1.5,marginTop:2}}>{m.d}</div></div>)}
-          </div>
-          <div style={{textAlign:"right",marginTop:8}}><button onClick={()=>setCfg(DEF_CFG)} style={{padding:"3px 10px",borderRadius:3,border:"1px solid var(--brd)",background:"transparent",color:"var(--dim)",fontSize:9}}>Reset</button></div>
+          </div>}
         </div>}
 
         {/* HISTORY */}
@@ -864,6 +877,19 @@ function App(){
         </div>}
       </header>
 
+      {/* INSTALL BANNER — shown when app not installed */}
+      {showInstall&&!isStandalone&&<div style={{margin:"8px 20px",padding:"14px 16px",borderRadius:10,background:"linear-gradient(135deg,#bf5af215,#8b5cf615)",border:"1px solid #bf5af240",display:"flex",alignItems:"center",gap:12}}>
+        <div style={{flex:1}}>
+          <div style={{fontSize:15,fontWeight:700,color:"#bf5af2",marginBottom:4}}>📲 Installa PM Scanner</div>
+          <div style={{fontSize:13,color:"var(--txt2)",lineHeight:1.4}}>Aggiungilo alla home per accesso rapido e notifiche push.</div>
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:6,flexShrink:0}}>
+          {installPrompt?<button onClick={doInstall} style={{padding:"10px 16px",borderRadius:8,background:"linear-gradient(135deg,#bf5af2,#8b5cf6)",color:"#fff",fontSize:13,fontWeight:700,minHeight:40}}>Installa</button>
+          :<button onClick={()=>{setPanel("settings");setSTab("install")}} style={{padding:"10px 16px",borderRadius:8,background:"#bf5af220",color:"#bf5af2",fontSize:13,fontWeight:700,border:"1px solid #bf5af240",minHeight:40}}>Come fare</button>}
+          <button onClick={dismissInstall} style={{padding:"4px",background:"transparent",color:"var(--dim3)",fontSize:12,border:"none",minHeight:20}}>Chiudi</button>
+        </div>
+      </div>}
+
       {/* PROGRESS BAR */}
       {loading&&<div style={{padding:"0 20px"}}><div style={{height:3,background:"#1a1a28",borderRadius:2,overflow:"hidden"}}><div style={{height:"100%",width:`${progress.p}%`,background:"linear-gradient(90deg,#ff2d55,#ff6b6b)",transition:"width .3s"}}/></div></div>}
       {error&&<div style={{margin:"8px 20px",padding:"12px 16px",borderRadius:8,background:"#ff2d5515",border:"1px solid #ff2d5540",fontSize:14,color:"#ff6b6b"}}>⚠ {error}</div>}
@@ -874,10 +900,29 @@ function App(){
       </div>}
 
       {/* FILTERS */}
-      {signals.length>0&&<div style={{padding:"10px 20px",borderBottom:"1px solid var(--brd)",overflowX:"auto",display:"flex",gap:6}}>
-        {[["all","Tutti",null],["critical","🔴 Crit",null],["alert","🟠 Alert",null],["watch","🔵 Mon",null]].map(([v,l])=><button key={v} onClick={()=>setFSev(v)} style={{padding:"8px 14px",borderRadius:8,fontSize:13,fontWeight:600,border:`1px solid ${fSev===v?"var(--blu)50":"var(--brd)"}`,background:fSev===v?"#64d2ff15":"transparent",color:fSev===v?"var(--blu)":"var(--dim3)",whiteSpace:"nowrap",flexShrink:0}}>{l}</button>)}
-        <span style={{width:1,background:"var(--brd)",margin:"0 4px",flexShrink:0}}/>
-        {[["all","Tutti"],["NEW_TYPE","🆕"],["VOLUME_SURGE","📊"],["PRICE_DISLOCATION","⚡"],["LIQ_IMBALANCE","💧"],["NICHE_HEAT","🔍"],["GEO_SENSITIVE","🌐"],["INFORMED_FLOW","🎯"]].map(([v,l])=>sigC[v]||v==="all"?<button key={v} onClick={()=>setFSig(v)} style={{padding:"8px 12px",borderRadius:8,fontSize:13,fontWeight:500,border:"none",background:fSig===v?"var(--brd2)":"transparent",color:fSig===v?"var(--txt2)":"var(--dim2)",whiteSpace:"nowrap",flexShrink:0}}>{l}</button>:null)}
+      {signals.length>0&&<div style={{padding:"12px 20px",borderBottom:"1px solid var(--brd)"}}>
+        {/* Row 1: Severity */}
+        <div style={{marginBottom:8}}>
+          <div style={{fontSize:11,color:"var(--dim2)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",marginBottom:6}}>Severità</div>
+          <div style={{display:"flex",gap:6,overflowX:"auto"}}>
+            {[["all","Tutti","Tutti i livelli"],["critical","🔴 Critici","Score alto, insider probabile"],["alert","🟠 Allerta","Anomalia da verificare"],["watch","🔵 Monitor","Sotto osservazione"]].map(([v,l,sub])=><button key={v} onClick={()=>setFSev(v)} style={{padding:"6px 12px",borderRadius:8,fontSize:13,fontWeight:600,border:`1px solid ${fSev===v?"var(--blu)50":"var(--brd)"}`,background:fSev===v?"#64d2ff15":"transparent",color:fSev===v?"var(--blu)":"var(--dim3)",whiteSpace:"nowrap",flexShrink:0,textAlign:"left"}}><div>{l}</div><div style={{fontSize:10,fontWeight:400,color:fSev===v?"var(--blu)":"var(--dim2)",marginTop:1}}>{sub}</div></button>)}
+          </div>
+        </div>
+        {/* Row 2: Signal type */}
+        <div style={{marginBottom:8}}>
+          <div style={{fontSize:11,color:"var(--dim2)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",marginBottom:6}}>Tipo segnale</div>
+          <div style={{display:"flex",gap:5,overflowX:"auto"}}>
+            {[["all","Tutti",""],["NEW_TYPE","🆕 Nuovo","Categoria rara"],["VOLUME_SURGE","📊 Volume","Picco anomalo"],["PRICE_DISLOCATION","⚡ Prezzo","Swing rapido"],["LIQ_IMBALANCE","💧 Liquidità","Vol vs Liq"],["NICHE_HEAT","🔍 Nicchia","Mkt oscuro attivo"],["GEO_SENSITIVE","🌐 Geo","Geopolitico"],["INFORMED_FLOW","🎯 Flusso","Spread largo + vol"]].map(([v,l,sub])=>sigC[v]||v==="all"?<button key={v} onClick={()=>setFSig(v)} style={{padding:"6px 10px",borderRadius:8,fontSize:12,fontWeight:500,border:"none",background:fSig===v?"var(--brd2)":"transparent",color:fSig===v?"var(--txt2)":"var(--dim2)",whiteSpace:"nowrap",flexShrink:0,textAlign:"left"}}><div>{l}{sigC[v]?` (${sigC[v]})`:""}</div>{sub&&<div style={{fontSize:10,fontWeight:400,color:"var(--dim2)",marginTop:1}}>{sub}</div>}</button>:null)}
+          </div>
+        </div>
+        {/* Row 3: Category */}
+        <div>
+          <div style={{fontSize:11,color:"var(--dim2)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",marginBottom:6}}>Categoria mercato</div>
+          <div style={{display:"flex",gap:5,overflowX:"auto"}}>
+            <button onClick={()=>setFCat("all")} style={{padding:"6px 12px",borderRadius:8,fontSize:12,fontWeight:500,border:"none",background:fCat==="all"?"var(--brd2)":"transparent",color:fCat==="all"?"var(--txt2)":"var(--dim2)",whiteSpace:"nowrap",flexShrink:0}}>Tutte</button>
+            {Object.entries(catC).sort((a,b)=>b[1]-a[1]).map(([cat,n])=><button key={cat} onClick={()=>setFCat(cat)} style={{padding:"6px 12px",borderRadius:8,fontSize:12,fontWeight:500,border:"none",background:fCat===cat?"var(--brd2)":"transparent",color:fCat===cat?"var(--txt2)":"var(--dim2)",whiteSpace:"nowrap",flexShrink:0}}>{cat} ({n})</button>)}
+          </div>
+        </div>
       </div>}
 
       {/* RESULTS */}
@@ -900,20 +945,14 @@ function App(){
         <button className={`tab-btn${panel===null&&!loading?" active":""}`} onClick={()=>setPanel(null)}>
           <span className="ti">🏠</span><span className="tl">Home</span>
         </button>
-        <button className={`tab-btn${panel==="alerts"?" active":""}`} onClick={()=>toggle("alerts")} style={Object.values(ch).some(v=>v)?{color:"var(--org)"}:{}}>
-          <span className="ti">🔔</span><span className="tl">Alert</span>
-        </button>
         <button className={`tab-btn scan-btn`} onClick={loading?()=>abRef.current?.abort():()=>scan(false)}>
           <span className="ti">{loading?"■":"▶"}</span><span className="tl">{loading?"STOP":"SCAN"}</span>
-        </button>
-        <button className={`tab-btn${panel==="schedule"?" active":""}`} onClick={()=>toggle("schedule")} style={schOn?{color:"var(--grn)"}:{}}>
-          <span className="ti">⏱</span><span className="tl">Timer</span>
         </button>
         <button className={`tab-btn${panel==="history"?" active":""}`} onClick={()=>toggle("history")}>
           <span className="ti">📊</span><span className="tl">Storico</span>
         </button>
-        <button className={`tab-btn${panel==="config"||panel==="install"?" active":""}`} onClick={()=>toggle(panel==="install"?"install":"config")}>
-          <span className="ti">⚙</span><span className="tl">Menu</span>
+        <button className={`tab-btn${panel==="settings"?" active":""}`} onClick={()=>toggle("settings")} style={schOn||Object.values(ch).some(v=>v)?{color:"var(--grn)"}:{}}>
+          <span className="ti">⚙</span><span className="tl">Impostazioni</span>
         </button>
       </div>
     </div>
