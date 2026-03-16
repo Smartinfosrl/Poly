@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pm-scanner-v3';
+const CACHE_NAME = 'pm-scanner-v5';
 const STATIC_ASSETS = [
   './',
   './index.html',
