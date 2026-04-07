@@ -114,18 +114,56 @@ const LS_KEY="pm_scanner_settings";
 const loadSettings=()=>{try{return JSON.parse(localStorage.getItem(LS_KEY))||{}}catch(e){return{}}};
 const saveSettings=(s)=>{try{localStorage.setItem(LS_KEY,JSON.stringify(s))}catch(e){}};
 
-// ─── Signal Archive (persistent) ──────────────────
+// ─── Signal Archive (Gist + localStorage fallback) ──
 const ARCHIVE_KEY="pm_archive";
-const loadArchive=()=>{try{return JSON.parse(localStorage.getItem(ARCHIVE_KEY))||[]}catch(e){return[]}};
-const saveArchive=(a)=>{try{localStorage.setItem(ARCHIVE_KEY,JSON.stringify(a))}catch(e){}};
+const GIST_SETTINGS_KEY="pm_gist_settings";
+const loadArchiveLocal=()=>{try{return JSON.parse(localStorage.getItem(ARCHIVE_KEY))||[]}catch(e){return[]}};
+const saveArchiveLocal=(a)=>{try{localStorage.setItem(ARCHIVE_KEY,JSON.stringify(a))}catch(e){}};
+const loadGistSettings=()=>{try{return JSON.parse(localStorage.getItem(GIST_SETTINGS_KEY))||{}}catch(e){return{}}};
+const saveGistSettings=(s)=>{try{localStorage.setItem(GIST_SETTINGS_KEY,JSON.stringify(s))}catch(e){}};
+
+// Read from Gist (public read = no token needed, private = needs token)
+async function readGist(gistId,token){
+  if(!gistId)return null;
+  try{
+    const headers={"Accept":"application/vnd.github+json"};
+    if(token)headers["Authorization"]=`Bearer ${token}`;
+    const r=await fetch(`https://api.github.com/gists/${gistId}`,{headers});
+    if(!r.ok)return null;
+    const d=await r.json();
+    const content=d.files?.["archive.json"]?.content;
+    return content?JSON.parse(content):[];
+  }catch(e){console.log("Gist read:",e.message);return null}
+}
+
+// Write to Gist (needs token)
+async function writeGist(gistId,token,filesOrData){
+  if(!gistId||!token)return false;
+  try{
+    // If filesOrData has string keys like "archive.json", it's a multi-file write
+    // Otherwise treat it as archive data for backward compatibility
+    const gistFiles={};
+    if(filesOrData&&typeof filesOrData==="object"&&!Array.isArray(filesOrData)&&Object.keys(filesOrData).some(k=>k.includes("."))){
+      for(const[name,data]of Object.entries(filesOrData))gistFiles[name]={content:JSON.stringify(data)};
+    }else{
+      gistFiles["archive.json"]={content:JSON.stringify(filesOrData)};
+    }
+    const r=await fetch(`https://api.github.com/gists/${gistId}`,{
+      method:"PATCH",
+      headers:{"Authorization":`Bearer ${token}`,"Accept":"application/vnd.github+json","Content-Type":"application/json"},
+      body:JSON.stringify({files:gistFiles})
+    });
+    return r.ok;
+  }catch(e){console.log("Gist write:",e.message);return false}
+}
 
 // ─── Utils ─────────────────────────────────────────
 const fmt=n=>{if(!n&&n!==0)return"$0";if(n>=1e6)return`$${(n/1e6).toFixed(2)}M`;if(n>=1e3)return`$${(n/1e3).toFixed(1)}K`;return`$${Math.round(n)}`};
 const pct=n=>`${(n*100).toFixed(1)}%`;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const ago=h=>{if(h<1)return`${Math.round(h*60)}m`;if(h<24)return`${Math.round(h)}h`;if(h<168)return`${(h/24).toFixed(1)}d`;return`${(h/168).toFixed(1)}w`};
-const ts=d=>d?.toLocaleTimeString("it-IT",{hour:"2-digit",minute:"2-digit"})||"—";
-const ds=d=>d?.toLocaleDateString("it-IT",{day:"2-digit",month:"2-digit"})||"";
+const ts=d=>{if(!d)return"—";const dt=d instanceof Date?d:new Date(d);return dt.toLocaleTimeString("it-IT",{hour:"2-digit",minute:"2-digit"})};
+const ds=d=>{if(!d)return"";const dt=d instanceof Date?d:new Date(d);return dt.toLocaleDateString("it-IT",{day:"2-digit",month:"2-digit"})};
 
 // ─── Audio ─────────────────────────────────────────
 const playSound=sev=>{try{const c=new(window.AudioContext||window.webkitAudioContext)(),o=c.createOscillator(),g=c.createGain();o.connect(g);g.connect(c.destination);o.type=sev==="critical"?"sawtooth":"sine";o.frequency.value=sev==="critical"?880:660;g.gain.setValueAtTime(.3,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+(sev==="critical"?.8:.4));o.start(c.currentTime);o.stop(c.currentTime+1);if(sev==="critical")setTimeout(()=>{const o2=c.createOscillator(),g2=c.createGain();o2.connect(g2);g2.connect(c.destination);o2.type="sawtooth";o2.frequency.value=1100;g2.gain.setValueAtTime(.3,c.currentTime);g2.gain.exponentialRampToValueAtTime(.001,c.currentTime+.6);o2.start(c.currentTime);o2.stop(c.currentTime+.7)},300)}catch(e){}};
@@ -342,10 +380,44 @@ function App(){
   const[tgCid,setTgCid]=useState(saved.tgCid||"");
   const[minSev,setMinSev]=useState(saved.minSev||"alert");
   const[aLog,setALog]=useState([]);
-  const[hist,setHist]=useState([]);
-  const[archive,setArchive]=useState(()=>loadArchive());
+  const[hist,setHist]=useState(()=>{try{return JSON.parse(localStorage.getItem("pm_scan_hist"))||[]}catch(e){return[]}});
+  const[archive,setArchive]=useState(()=>loadArchiveLocal());
+  const[gistSyncing,setGistSyncing]=useState(false);
+  const gistCfg=useRef(loadGistSettings()).current;
+  const[gistId,setGistId]=useState(gistCfg.gistId||"");
+  const[gistToken,setGistToken]=useState(gistCfg.gistToken||"");
 
-  // Archive signals after scan
+  // Sync archive from Gist on startup
+  useEffect(()=>{
+    if(!gistId)return;
+    (async()=>{
+      setGistSyncing(true);
+      const remote=await readGist(gistId,gistToken);
+      if(remote&&remote.length>0){
+        // Merge: remote + local outcomes
+        const local=loadArchiveLocal();
+        const merged=[...remote];
+        for(const l of local){
+          const idx=merged.findIndex(r=>r.id===l.id||r.marketId===l.marketId&&Math.abs(new Date(r.scanTime).getTime()-new Date(l.scanTime).getTime())<60000);
+          if(idx>=0&&l.outcome&&!merged[idx].outcome){
+            merged[idx]={...merged[idx],outcome:l.outcome,outcomeNote:l.outcomeNote,outcomeTime:l.outcomeTime};
+          }else if(idx<0){
+            merged.push(l);
+          }
+        }
+        merged.sort((a,b)=>new Date(a.scanTime)-new Date(b.scanTime));
+        const trimmed=merged.slice(-1000);
+        setArchive(trimmed);
+        saveArchiveLocal(trimmed);
+      }
+      setGistSyncing(false);
+    })();
+  },[gistId,gistToken]);
+
+  // Save Gist settings
+  useEffect(()=>{saveGistSettings({gistId,gistToken})},[gistId,gistToken]);
+
+  // Archive signals after scan — save locally + push to Gist
   const archiveSignals=useCallback((sigs)=>{
     const now=Date.now();
     const newEntries=sigs.map(s=>({
@@ -356,40 +428,39 @@ function App(){
       score:s.totalWeight,
       severity:s.maxSeverity,
       confidence:s.confidence,
-      vol24h:s.vol24h,
-      yesPrice:s.yesPrice,
-      ageH:s.ageH,
+      category:s.category||"📦 Altro",
+      vol24h:s.meta.vol24h,
+      yesPrice:s.meta.yesPrice,
+      ageH:s.meta.ageH,
       signals:s.detections.map(d=>({signal:d.signal,label:d.label,weight:d.weight,detail:d.detail})),
-      scanTime:now,
-      // Outcome tracking
-      outcome:null, // null=pending, "tp"=true positive, "fp"=false positive, "tn"=true negative
+      scanTime:new Date(now).toISOString(),
+      outcome:null,
       outcomeNote:"",
       outcomeTime:null,
-      // Market result
-      resolved:false,
-      resolvedPrice:null,
     }));
-    // Deduplicate: don't add if same market was archived in last 12h
     setArchive(prev=>{
       const merged=[...prev];
       for(const entry of newEntries){
-        const dup=merged.find(a=>a.marketId===entry.marketId&&(now-a.scanTime)<43200000);
-        if(!dup) merged.push(entry);
+        const dup=merged.find(a=>a.marketId===entry.marketId&&(now-new Date(a.scanTime).getTime())<43200000);
+        if(!dup)merged.push(entry);
       }
-      const trimmed=merged.slice(-500); // keep last 500
-      saveArchive(trimmed);
+      const trimmed=merged.slice(-1000);
+      saveArchiveLocal(trimmed);
+      // Async push to Gist (non-blocking)
+      if(gistId&&gistToken)writeGist(gistId,gistToken,trimmed).then(ok=>{if(ok)console.log("Gist synced")});
       return trimmed;
     });
-  },[]);
+  },[gistId,gistToken]);
 
   // Update outcome for an archived signal
   const setOutcome=useCallback((id,outcome,note)=>{
     setArchive(prev=>{
-      const updated=prev.map(a=>a.id===id?{...a,outcome,outcomeNote:note||a.outcomeNote,outcomeTime:Date.now()}:a);
-      saveArchive(updated);
+      const updated=prev.map(a=>a.id===id?{...a,outcome,outcomeNote:note||a.outcomeNote,outcomeTime:new Date().toISOString()}:a);
+      saveArchiveLocal(updated);
+      if(gistId&&gistToken)writeGist(gistId,gistToken,updated).then(ok=>{if(ok)console.log("Outcome synced to Gist")});
       return updated;
     });
-  },[]);
+  },[gistId,gistToken]);
 
   // Export archive as JSON
   const exportArchive=useCallback(()=>{
@@ -560,7 +631,7 @@ function App(){
       setProgress({t:"Analisi...",p:95});await sleep(50);
       const det=analyze(all,prH,cfg);setSignals(det);
       const st={scanned:all.length,signals:det.length,critical:det.filter(s=>s.maxSeverity==="critical").length,alert:det.filter(s=>s.maxSeverity==="alert").length,watch:det.filter(s=>s.maxSeverity==="watch").length};
-      setStats(st);const now=new Date();setLastScan(now);setHist(p=>[...p,{t:now,...st,auto}].slice(-100));setProgress({t:"",p:100});
+      setStats(st);const now=new Date();setLastScan(now);setHist(p=>{const h=[...p,{t:now.toISOString(),...st,auto}].slice(-100);try{localStorage.setItem("pm_scan_hist",JSON.stringify(h))}catch(e){}return h});setProgress({t:"",p:100});
       // Archive critical + alert signals for tracking
       const toArchive=det.filter(s=>s.maxSeverity==="critical"||s.maxSeverity==="alert");
       if(toArchive.length>0) archiveSignals(toArchive);
@@ -568,8 +639,12 @@ function App(){
     }catch(e){if(e.name!=="AbortError")setError(e.message)}finally{setLoading(false)}
   },[cfg,loading,fire,archiveSignals]);
 
+  // Keep a ref to the latest scan so scheduler always uses current cfg
+  const scanRef=useRef(scan);
+  useEffect(()=>{scanRef.current=scan},[scan]);
+
   // Scheduler
-  useEffect(()=>{if(schRef.current)clearInterval(schRef.current);if(!schOn){setNextScan(null);return}const ms=schMin*6e4;setNextScan(new Date(Date.now()+ms));schRef.current=setInterval(()=>{setNextScan(new Date(Date.now()+ms));scan(true)},ms);return()=>{if(schRef.current)clearInterval(schRef.current)}},[schOn,schMin]);
+  useEffect(()=>{if(schRef.current)clearInterval(schRef.current);if(!schOn){setNextScan(null);return}const ms=schMin*6e4;setNextScan(new Date(Date.now()+ms));schRef.current=setInterval(()=>{setNextScan(new Date(Date.now()+ms));scanRef.current(true)},ms);return()=>{if(schRef.current)clearInterval(schRef.current)}},[schOn,schMin]);
 
   const disp=useMemo(()=>{let l=signals;if(fSev!=="all")l=l.filter(s=>s.maxSeverity===fSev);if(fSig!=="all")l=l.filter(s=>s.detections.some(d=>d.signal===fSig));if(fCat!=="all")l=l.filter(s=>s.category===fCat);if(sort==="weight")l=[...l].sort((a,b)=>b.totalWeight-a.totalWeight);if(sort==="volume")l=[...l].sort((a,b)=>b.meta.vol24h-a.meta.vol24h);if(sort==="newest")l=[...l].sort((a,b)=>a.meta.ageH-b.meta.ageH);return l},[signals,fSev,fSig,fCat,sort]);
   const sigC=useMemo(()=>{const c={};for(const s of signals)for(const d of s.detections)c[d.signal]=(c[d.signal]||0)+1;return c},[signals]);
@@ -601,7 +676,7 @@ function App(){
           <div style={{fontSize:16,fontWeight:700,marginBottom:12}}>⚙ Impostazioni</div>
           {/* Sub-tabs */}
           <div style={{display:"flex",gap:6,marginBottom:14,overflowX:"auto"}}>
-            {[["timer","⏱ Timer",schOn?"var(--grn)":null],["alerts","🔔 Alert",Object.values(ch).some(v=>v)?"var(--org)":null],["params","📐 Parametri",null],["install","📲 Installa",null]].map(([k,l,dot])=><button key={k} onClick={()=>setSTab(k)} style={{padding:"10px 16px",borderRadius:10,fontSize:14,fontWeight:600,border:`1px solid ${sTab===k?"var(--blu)50":"var(--brd)"}`,background:sTab===k?"#64d2ff12":"var(--card)",color:sTab===k?"var(--blu)":"var(--dim3)",whiteSpace:"nowrap",flexShrink:0,display:"flex",alignItems:"center",gap:6,minHeight:44}}>{l}{dot&&<span style={{width:8,height:8,borderRadius:"50%",background:dot,flexShrink:0}}/>}</button>)}
+            {[["timer","⏱ Timer",schOn?"var(--grn)":null],["alerts","🔔 Alert",Object.values(ch).some(v=>v)?"var(--org)":null],["params","📐 Parametri",null],["gist","☁ Cloud",gistId?"var(--blu)":null],["install","📲 Installa",null]].map(([k,l,dot])=><button key={k} onClick={()=>setSTab(k)} style={{padding:"10px 16px",borderRadius:10,fontSize:14,fontWeight:600,border:`1px solid ${sTab===k?"var(--blu)50":"var(--brd)"}`,background:sTab===k?"#64d2ff12":"var(--card)",color:sTab===k?"var(--blu)":"var(--dim3)",whiteSpace:"nowrap",flexShrink:0,display:"flex",alignItems:"center",gap:6,minHeight:44}}>{l}{dot&&<span style={{width:8,height:8,borderRadius:"50%",background:dot,flexShrink:0}}/>}</button>)}
           </div>
 
           {/* ─── TIMER ─── */}
@@ -680,14 +755,18 @@ function App(){
                   return <button key={cat} onClick={()=>{
                     setCfg(c=>{
                       const ex=c.excludedCats||[];
-                      return {...c,excludedCats:excluded?ex.filter(x=>x!==cat):[...ex,cat]};
+                      const newExcluded=excluded?ex.filter(x=>x!==cat):[...ex,cat];
+                      const newCfg={...c,excludedCats:newExcluded};
+                      // Sync to Gist so GitHub Actions uses same categories
+                      if(gistId&&gistToken)writeGist(gistId,gistToken,{"config.json":{excludedCats:newExcluded}}).then(ok=>{if(ok)console.log("Config synced to Gist")});
+                      return newCfg;
                     });
                   }} style={{padding:"8px 14px",borderRadius:8,fontSize:13,fontWeight:600,border:`1px solid ${excluded?"#ff2d5530":"#34c75930"}`,background:excluded?"#ff2d5510":"#34c75910",color:excluded?"var(--red)":"var(--grn)",minHeight:40,display:"flex",alignItems:"center",gap:6}}>
                     <span style={{fontSize:14}}>{excluded?"✗":"✓"}</span>{cat}
                   </button>
                 })}
               </div>
-              {(cfg.excludedCats||[]).length>0&&<div style={{fontSize:12,color:"var(--dim)",marginTop:8}}>🚫 Escluse: {(cfg.excludedCats||[]).join(", ")}</div>}
+              {(cfg.excludedCats||[]).length>0&&<div style={{fontSize:12,color:"var(--dim)",marginTop:8}}>🚫 Escluse: {(cfg.excludedCats||[]).join(", ")}{gistId&&gistToken?" — sincronizzato con GitHub Actions":""}</div>}
             </div>
             <div style={{marginBottom:14,padding:12,borderRadius:8,background:"var(--card)",border:"1px solid var(--brd)"}}>
               <div style={{fontSize:14,fontWeight:700,color:"var(--txt)",marginBottom:8}}>🔤 Dimensione testo</div>
@@ -717,6 +796,71 @@ function App(){
               {Object.entries(CFG_M).map(([k,m])=><div key={k} style={{padding:10,borderRadius:8,background:"var(--card)",border:"1px solid var(--brd)"}}><div style={{fontSize:14,color:"var(--dim3)",fontWeight:600,display:"flex",justifyContent:"space-between",marginBottom:4}}><span>{m.l}</span><span style={{color:"var(--blu)",fontFamily:"var(--m)",fontWeight:700}}>{cfg[k]}</span></div><input type="range" min={m.mn} max={m.mx} step={m.s} value={cfg[k]} onChange={e=>setCfg(c=>({...c,[k]:parseFloat(e.target.value)}))} style={{width:"100%"}}/><div style={{fontSize:12,color:"var(--dim2)",lineHeight:1.5,marginTop:4}}>{m.d}</div></div>)}
             </div>
             <div style={{textAlign:"right",marginTop:10}}><button onClick={()=>setCfg(DEF_CFG)} style={{padding:"8px 16px",borderRadius:8,border:"1px solid var(--brd)",background:"transparent",color:"var(--dim)",fontSize:13}}>↺ Reset default</button></div>
+          </div>}
+
+          {/* ─── GIST CLOUD ─── */}
+          {sTab==="gist"&&<div>
+            <div style={{fontSize:15,fontWeight:700,marginBottom:4}}>Archivio Cloud (GitHub Gist)</div>
+            <div style={{fontSize:12,color:"var(--dim3)",marginBottom:14,lineHeight:1.5}}>Sincronizza lo storico segnali su un Gist GitHub. Sia l'app che le GitHub Actions scrivono qui. I dati persistono anche se cambi browser o dispositivo.</div>
+
+            <div style={{padding:14,borderRadius:8,background:"var(--card)",border:"1px solid var(--brd)",marginBottom:10}}>
+              <div style={{fontSize:13,color:"var(--blu)",fontWeight:700,marginBottom:8}}>SETUP (una volta sola)</div>
+              <div style={{fontSize:13,color:"var(--txt2)",lineHeight:1.8}}>
+                <strong>1.</strong> Vai su <a href="https://gist.github.com" target="_blank" rel="noopener" style={{color:"var(--blu)"}}>gist.github.com</a><br/>
+                <strong>2.</strong> Crea un nuovo Gist con nome file: <code style={{background:"var(--brd)",padding:"2px 6px",borderRadius:4}}>archive.json</code><br/>
+                <strong>3.</strong> Contenuto: <code style={{background:"var(--brd)",padding:"2px 6px",borderRadius:4}}>[]</code><br/>
+                <strong>4.</strong> Tipo: <strong>Secret</strong> (non pubblico) → Create<br/>
+                <strong>5.</strong> Copia l'ID del Gist dall'URL (es. <code style={{background:"var(--brd)",padding:"2px 6px",borderRadius:4,fontSize:11}}>abc123def456</code>)<br/>
+                <strong>6.</strong> Crea un <a href="https://github.com/settings/tokens/new" target="_blank" rel="noopener" style={{color:"var(--blu)"}}>Personal Access Token</a> con permesso <strong>gist</strong><br/>
+              </div>
+            </div>
+
+            <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:12}}>
+              <div>
+                <div style={{fontSize:12,color:"var(--dim3)",fontWeight:600,marginBottom:4}}>Gist ID</div>
+                <input placeholder="abc123def456..." value={gistId} onChange={e=>setGistId(e.target.value)} style={IS}/>
+              </div>
+              <div>
+                <div style={{fontSize:12,color:"var(--dim3)",fontWeight:600,marginBottom:4}}>GitHub Token (permesso gist)</div>
+                <input placeholder="ghp_xxxxxxxxxxxx" value={gistToken} onChange={e=>setGistToken(e.target.value)} type="password" style={IS}/>
+              </div>
+            </div>
+
+            <div style={{display:"flex",gap:8,marginBottom:12}}>
+              <button onClick={async()=>{
+                if(!gistId){alert("Inserisci il Gist ID");return}
+                setGistSyncing(true);
+                const data=await readGist(gistId,gistToken);
+                if(data!==null){
+                  setArchive(data);saveArchiveLocal(data);
+                  alert(`✅ Caricati ${data.length} record dal Gist`);
+                }else alert("❌ Impossibile leggere il Gist. Verifica ID e token.");
+                setGistSyncing(false);
+              }} style={{padding:"10px 16px",borderRadius:8,border:"1px solid var(--blu)40",background:"var(--blu)10",color:"var(--blu)",fontSize:14,fontWeight:600,minHeight:44,flex:1}}>
+                {gistSyncing?"⏳ Sync...":"⬇ Scarica da Gist"}
+              </button>
+              <button onClick={async()=>{
+                if(!gistId||!gistToken){alert("Servono Gist ID e Token per scrivere");return}
+                setGistSyncing(true);
+                const ok=await writeGist(gistId,gistToken,archive);
+                alert(ok?`✅ ${archive.length} record salvati su Gist`:"❌ Scrittura fallita. Verifica token.");
+                setGistSyncing(false);
+              }} style={{padding:"10px 16px",borderRadius:8,border:"1px solid var(--grn)40",background:"var(--grn)10",color:"var(--grn)",fontSize:14,fontWeight:600,minHeight:44,flex:1}}>
+                ⬆ Salva su Gist
+              </button>
+            </div>
+
+            {gistId&&<div style={{padding:10,borderRadius:8,background:gistId&&gistToken?"#34c75910":"#ff9f0a10",border:`1px solid ${gistId&&gistToken?"#34c75930":"#ff9f0a30"}`,fontSize:13}}>
+              <div style={{color:gistId&&gistToken?"var(--grn)":"var(--org)",fontWeight:600}}>
+                {gistId&&gistToken?"✅ Cloud configurato — sync automatico attivo":"⚠ Solo Gist ID — lettura OK, scrittura richiede token"}
+              </div>
+              <div style={{color:"var(--dim3)",fontSize:12,marginTop:4}}>{archive.length} record in archivio locale</div>
+            </div>}
+
+            <div style={{marginTop:12,padding:10,borderRadius:8,background:"var(--card)",border:"1px solid var(--brd)",fontSize:12,color:"var(--dim3)",lineHeight:1.6}}>
+              💡 <strong>Per GitHub Actions:</strong> aggiungi gli stessi valori come Secrets nel repo:<br/>
+              <code>GIST_ID</code> e <code>GIST_TOKEN</code> in Settings → Secrets → Actions
+            </div>
           </div>}
 
           {/* ─── INSTALL ─── */}
@@ -867,7 +1011,7 @@ function App(){
           {/* Clear button */}
           {archive.length>0&&<div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:12}}>
             <span style={{fontSize:12,color:"var(--dim)"}}>{archive.length} segnali archiviati</span>
-            <button onClick={()=>{if(confirm("Cancellare tutto l'archivio?")){setArchive([]);saveArchive([])}}} style={{padding:"8px 14px",borderRadius:8,border:"1px solid #ff2d5540",background:"transparent",color:"var(--red)",fontSize:13,fontWeight:600}}>🗑 Svuota</button>
+            <button onClick={()=>{if(confirm("Cancellare tutto l'archivio?")){setArchive([]);saveArchiveLocal([]);if(gistId&&gistToken)writeGist(gistId,gistToken,[])}}} style={{padding:"8px 14px",borderRadius:8,border:"1px solid #ff2d5540",background:"transparent",color:"var(--red)",fontSize:13,fontWeight:600}}>🗑 Svuota</button>
           </div>}
 
           {/* Scan history */}
